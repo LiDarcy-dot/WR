@@ -88,7 +88,7 @@ TIMEZONE=$Timezone
 
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
 Write-Host "==> Инициализация папки данных и БД..." -ForegroundColor Cyan
-& ".\.venv\Scripts\python.exe" ".\scripts\init_data.py" --data-dir $DataDir
+& $venvPy ".\scripts\init_data.py" --data-dir $DataDir
 
 Write-Host ""
 Write-Host "Готово." -ForegroundColor Green
