@@ -1,16 +1,4 @@
 #Requires -Version 5.1
-<#
-  Full install into Desktop\Assistant (code + data in one folder).
-  Run in PowerShell:
-
-  cd $env:USERPROFILE\Desktop
-  git clone https://github.com/LiDarcy-dot/WR.git WR-install -b cursor/local-assistant-scaffold-d6ce
-  .\WR-install\assistant\scripts\install_desktop.ps1 -BotToken "YOUR_TOKEN" -OwnerId YOUR_ID
-
-  Or if WR already on Desktop:
-  cd $env:USERPROFILE\Desktop\WR\assistant
-  .\scripts\install_desktop.ps1 -BotToken "..." -OwnerId ...
-#>
 param(
     [Parameter(Mandatory = $true)][string]$BotToken,
     [Parameter(Mandatory = $true)][long]$OwnerId,
@@ -33,29 +21,24 @@ function Require-Cmd($name) {
 Require-Cmd git
 Require-Cmd py
 
-$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$sourceAssistant = Split-Path -Parent $scriptDir
+Write-Host ""
+Write-Host "WR Assistant installer" -ForegroundColor Cyan
+Write-Host "Target: $TargetDir" -ForegroundColor Cyan
+Write-Host ""
 
-Write-Host "==> Target folder: $TargetDir" -ForegroundColor Cyan
-New-Item -ItemType Directory -Force -Path $TargetDir | Out-Null
-
-# If run from existing clone, copy from there. Else clone fresh to temp.
-$tempClone = $null
-if (Test-Path (Join-Path $sourceAssistant "main.py")) {
-    Write-Host "==> Using local source: $sourceAssistant" -ForegroundColor Cyan
-    $copyFrom = $sourceAssistant
-} else {
-    $tempClone = Join-Path $env:TEMP "WR-assistant-clone"
-    if (Test-Path $tempClone) { Remove-Item -Recurse -Force $tempClone }
-    Write-Host "==> Cloning repo..." -ForegroundColor Cyan
-    git clone --branch $Branch --depth 1 $RepoUrl $tempClone
-    $copyFrom = Join-Path $tempClone "assistant"
+$tempClone = Join-Path $env:TEMP ("WR-assistant-" + [guid]::NewGuid().ToString("N"))
+Write-Host "==> Downloading latest code from GitHub..." -ForegroundColor Cyan
+git clone --branch $Branch --depth 1 $RepoUrl $tempClone
+$copyFrom = Join-Path $tempClone "assistant"
+if (-not (Test-Path (Join-Path $copyFrom "main.py"))) {
+    throw "assistant/main.py not found in repo"
 }
 
-Write-Host "==> Copying assistant files..." -ForegroundColor Cyan
-$exclude = @(".venv", "__pycache__", ".env", ".pytest_cache", "*.pyc")
+New-Item -ItemType Directory -Force -Path $TargetDir | Out-Null
+
+Write-Host "==> Copying files to Desktop\Assistant ..." -ForegroundColor Cyan
 Get-ChildItem -Path $copyFrom -Force | Where-Object {
-    $_.Name -notin @(".venv", "__pycache__", ".pytest_cache")
+    $_.Name -notin @(".venv", "__pycache__", ".pytest_cache", ".env")
 } | ForEach-Object {
     $dest = Join-Path $TargetDir $_.Name
     if ($_.PSIsContainer) {
@@ -66,29 +49,35 @@ Get-ChildItem -Path $copyFrom -Force | Where-Object {
     }
 }
 
+Remove-Item -Recurse -Force $tempClone -ErrorAction SilentlyContinue
+
 Set-Location $TargetDir
 
-Write-Host "==> Creating Python venv..." -ForegroundColor Cyan
+Write-Host "==> Python venv + packages ..." -ForegroundColor Cyan
 $venvPy = Join-Path $TargetDir ".venv\Scripts\python.exe"
 $created = $false
 foreach ($ver in @("3.12", "3.11", "3")) {
     Write-Host "Trying Python $ver ..." -ForegroundColor DarkYellow
     if (Test-Path ".venv") { Remove-Item -Recurse -Force ".venv" }
-    & py "-$ver" -m venv .venv
+    & py "-$ver" -m venv .venv 2>$null
     if (Test-Path $venvPy) {
         Write-Host "OK: Python $ver" -ForegroundColor Green
         $created = $true
         break
     }
 }
-if (-not $created) { throw "Could not create venv. Install Python 3.12." }
+if (-not $created) {
+    throw "Could not create venv. Install Python 3.12 from https://www.python.org/downloads/"
+}
 
 & $venvPy -m pip install --upgrade pip
+if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed" }
 & $venvPy -m pip install -r requirements.txt
+if ($LASTEXITCODE -ne 0) { throw "pip install failed - try Python 3.12" }
 & $venvPy -c "import telegram; print('telegram OK')"
-if ($LASTEXITCODE -ne 0) { throw "telegram module missing" }
+if ($LASTEXITCODE -ne 0) { throw "telegram not installed" }
 
-Write-Host "==> Writing .env ..." -ForegroundColor Cyan
+Write-Host "==> Config .env ..." -ForegroundColor Cyan
 @"
 TELEGRAM_BOT_TOKEN=$BotToken
 TELEGRAM_OWNER_ID=$OwnerId
@@ -98,33 +87,33 @@ ASSISTANT_DATA_DIR=$TargetDir
 TIMEZONE=$Timezone
 "@ | Set-Content -Path ".\.env" -Encoding ASCII
 
-Write-Host "==> Init database + folders ..." -ForegroundColor Cyan
+Write-Host "==> Database + folders ..." -ForegroundColor Cyan
 & $venvPy ".\scripts\init_data.py" --data-dir $TargetDir
+if ($LASTEXITCODE -ne 0) { throw "init_data failed" }
+
+& $venvPy -c "from app.bot import run_bot; print('bot imports OK')"
+if ($LASTEXITCODE -ne 0) { throw "bot import failed" }
 
 $startBat = Join-Path $TargetDir "START_BOT.bat"
 @"
 @echo off
 cd /d "%~dp0"
-echo Starting WR Assistant bot...
-".venv\Scripts\python.exe" main.py
+title WR Assistant
+echo Starting bot... Keep this window open.
+call .venv\Scripts\python.exe main.py
+echo.
+echo Bot stopped.
 pause
 "@ | Set-Content -Path $startBat -Encoding ASCII
 
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Green
-Write-Host "INSTALLED TO: $TargetDir" -ForegroundColor Green
+Write-Host " DONE: $TargetDir" -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Green
 Write-Host ""
-Write-Host "1) Keep LM Studio server on http://127.0.0.1:1234"
-Write-Host "2) Double-click START_BOT.bat  OR run:"
-Write-Host "   cd `"$TargetDir`""
-Write-Host "   .\.venv\Scripts\python.exe main.py"
+Write-Host "Next:"
+Write-Host "  1) LM Studio server on http://127.0.0.1:1234 (model $Model)"
+Write-Host "  2) Double-click START_BOT.bat on Desktop\Assistant"
+Write-Host "  3) Telegram -> /start -> /status"
 Write-Host ""
-Write-Host "3) Telegram: /start  then  /status"
-Write-Host ""
-
-if ($tempClone -and (Test-Path $tempClone)) {
-    Remove-Item -Recurse -Force $tempClone -ErrorAction SilentlyContinue
-}
-
 Read-Host "Press Enter to close"
