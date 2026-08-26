@@ -51,9 +51,30 @@ $assistant = Join-Path $InstallRoot "assistant"
 Set-Location $assistant
 
 Write-Host "==> venv + зависимости..." -ForegroundColor Cyan
-py -3 -m venv .venv
-& ".\.venv\Scripts\python.exe" -m pip install --upgrade pip
-& ".\.venv\Scripts\pip.exe" install -r requirements.txt
+$venvPy = Join-Path $assistant ".venv\Scripts\python.exe"
+$pythonOk = $false
+foreach ($ver in @("3.12", "3.11", "3")) {
+    try {
+        & py "-$ver" -m venv .venv
+        if (Test-Path $venvPy) {
+            Write-Host "venv на Python $ver" -ForegroundColor Green
+            $pythonOk = $true
+            break
+        }
+    } catch {
+        Write-Host "Python $ver: $($_.Exception.Message)" -ForegroundColor DarkYellow
+    }
+}
+if (-not $pythonOk) {
+    throw "Не удалось создать venv. Рекомендуется Python 3.12 с python.org"
+}
+
+& $venvPy -m pip install --upgrade pip
+& $venvPy -m pip install -r requirements.txt
+& $venvPy -c "import telegram; print('telegram OK')"
+if ($LASTEXITCODE -ne 0) {
+    throw "pip install не установил python-telegram-bot. Запусти .\scripts\repair_windows.ps1"
+}
 
 Write-Host "==> Пишу .env (локально, не в git)..." -ForegroundColor Cyan
 @"
@@ -80,3 +101,5 @@ Write-Host "   python main.py"
 Write-Host ""
 Write-Host "Или сразу:" -ForegroundColor Yellow
 Write-Host "   .\.venv\Scripts\python.exe main.py"
+Write-Host ""
+Read-Host "Нажми Enter чтобы закрыть окно"
