@@ -21,7 +21,7 @@ class Settings(BaseSettings):
         alias="LM_STUDIO_BASE_URL",
     )
     lm_studio_model: str = Field(
-        default="qwen2.5-7b-instruct",
+        default="qwen/qwen3.5-9b",
         alias="LM_STUDIO_MODEL",
     )
 

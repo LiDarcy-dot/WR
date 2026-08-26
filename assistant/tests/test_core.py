@@ -134,3 +134,13 @@ def test_parse_model_json_and_fallback() -> None:
     )
     assert "Ваня" in card
     assert "Вишлист" in card
+
+
+def test_strip_think_then_json() -> None:
+    raw = (
+        "<think>долго думаю</think>\n"
+        '{"mode":"chat","message":"Привет","action_type":null,"payload":{}}'
+    )
+    reply = parse_model_content(raw)
+    assert reply.mode == "chat"
+    assert reply.message == "Привет"

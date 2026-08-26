@@ -10,7 +10,7 @@ from app.actions.models import AssistantReply
 
 
 SYSTEM_JSON_HINT = """
-Когда пользователь хочет СОХРАНИТЬ данные, ответь ТОЛЬКО JSON:
+Когда пользователь хочет СОХРАНИТЬ данные, ответь ТОЛЬКО JSON без markdown-ограждений:
 {
   "mode": "propose_action",
   "message": "краткое пояснение по-русски",
@@ -26,6 +26,7 @@ SYSTEM_JSON_HINT = """
   "payload": {}
 }
 
+Не пиши рассуждения вне JSON. Не оборачивай JSON в ```.
 Примеры payload:
 - upsert_person: display_name, relation?, birthday_day?, birthday_month?, birthday_year?, attributes:[{key,label,value,value_type}]
 - create_reminder_one_shot: title, fire_at (ISO), body?
@@ -33,9 +34,11 @@ SYSTEM_JSON_HINT = """
 - create_entity_type: name (latin snake), title, fields:[{key,label,field_type,required}]
 """
 
+THINK_RE = re.compile(r"<think>[\s\S]*?</think>", re.IGNORECASE)
+
 
 class LMStudioClient:
-    def __init__(self, base_url: str, model: str, timeout: float = 120.0) -> None:
+    def __init__(self, base_url: str, model: str, timeout: float = 180.0) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.timeout = timeout
@@ -66,8 +69,12 @@ class LMStudioClient:
             response.raise_for_status()
             data = response.json()
 
-        content = data["choices"][0]["message"]["content"]
-        return parse_model_content(content)
+        message = data["choices"][0]["message"]
+        content = message.get("content") or ""
+        # некоторые reasoning-сборки кладут мысль отдельно
+        if not content and message.get("reasoning_content"):
+            content = message["reasoning_content"]
+        return parse_model_content(str(content))
 
     async def healthcheck(self) -> bool:
         try:
@@ -78,8 +85,17 @@ class LMStudioClient:
             return False
 
 
+def strip_think(text: str) -> str:
+    return THINK_RE.sub("", text).strip()
+
+
 def parse_model_content(content: str) -> AssistantReply:
-    text = content.strip()
+    text = strip_think(content)
+    # убрать markdown fences если модель всё же обернула
+    fence = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
+    if fence:
+        text = fence.group(1).strip()
+
     try:
         return AssistantReply.model_validate_json(text)
     except Exception:
@@ -93,4 +109,4 @@ def parse_model_content(content: str) -> AssistantReply:
         except Exception:
             pass
 
-    return AssistantReply(mode="chat", message=text)
+    return AssistantReply(mode="chat", message=text or content.strip())
