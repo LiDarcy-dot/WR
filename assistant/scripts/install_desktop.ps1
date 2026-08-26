@@ -11,6 +11,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "python_venv.ps1")
 
 function Require-Cmd($name) {
     if (-not (Get-Command $name -ErrorAction SilentlyContinue)) {
@@ -19,7 +20,9 @@ function Require-Cmd($name) {
 }
 
 Require-Cmd git
-Require-Cmd py
+if (-not (Get-Command py -ErrorAction SilentlyContinue) -and -not (Get-Command python -ErrorAction SilentlyContinue)) {
+    throw "Missing Python. Install from https://www.python.org/downloads/"
+}
 
 Write-Host ""
 Write-Host "WR Assistant installer" -ForegroundColor Cyan
@@ -54,28 +57,8 @@ Remove-Item -Recurse -Force $tempClone -ErrorAction SilentlyContinue
 Set-Location $TargetDir
 
 Write-Host "==> Python venv + packages ..." -ForegroundColor Cyan
-$venvPy = Join-Path $TargetDir ".venv\Scripts\python.exe"
-$created = $false
-foreach ($ver in @("3.12", "3.11", "3")) {
-    Write-Host "Trying Python $ver ..." -ForegroundColor DarkYellow
-    if (Test-Path ".venv") { Remove-Item -Recurse -Force ".venv" }
-    & py "-$ver" -m venv .venv 2>$null
-    if (Test-Path $venvPy) {
-        Write-Host "OK: Python $ver" -ForegroundColor Green
-        $created = $true
-        break
-    }
-}
-if (-not $created) {
-    throw "Could not create venv. Install Python 3.12 from https://www.python.org/downloads/"
-}
-
-& $venvPy -m pip install --upgrade pip
-if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed" }
-& $venvPy -m pip install -r requirements.txt
-if ($LASTEXITCODE -ne 0) { throw "pip install failed - try Python 3.12" }
-& $venvPy -c "import telegram; print('telegram OK')"
-if ($LASTEXITCODE -ne 0) { throw "telegram not installed" }
+$venvPy = Find-AssistantVenvPython -WorkDir $TargetDir
+Install-AssistantPackages -VenvPy $venvPy -WorkDir $TargetDir
 
 Write-Host "==> Config .env ..." -ForegroundColor Cyan
 @"
