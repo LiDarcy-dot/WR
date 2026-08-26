@@ -1,86 +1,78 @@
 #Requires -Version 5.1
-<#
-  Переустановка зависимостей + проверка, что бот может стартовать.
-  Запуск из папки assistant:
-    .\scripts\repair_windows.ps1
-#>
-param(
-    [string]$DataDir = "$env:USERPROFILE\Desktop\Assistant",
-    [string]$PythonLauncher = "py -3.12"
-)
-
+# Reinstall deps and verify bot imports.
+# Run from assistant folder:
+#   .\scripts\repair_windows.ps1
 $ErrorActionPreference = "Stop"
 $here = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 Set-Location $here
 
-function Test-PythonImport($pyExe, $module) {
+function Test-PythonImport([string]$pyExe, [string]$module) {
     & $pyExe -c "import $module" 2>$null
     return ($LASTEXITCODE -eq 0)
 }
 
-Write-Host "==> Папка: $here" -ForegroundColor Cyan
-
-# Пробуем существующий venv
+Write-Host "==> Folder: $here" -ForegroundColor Cyan
 $venvPy = Join-Path $here ".venv\Scripts\python.exe"
+$DataDir = Join-Path $env:USERPROFILE "Desktop\Assistant"
+
 if (Test-Path $venvPy) {
-    Write-Host "==> Обновляю pip и ставлю requirements в существующий venv..." -ForegroundColor Cyan
+    Write-Host "==> Upgrading pip and installing requirements..." -ForegroundColor Cyan
     & $venvPy -m pip install --upgrade pip
+    if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed" }
     & $venvPy -m pip install -r requirements.txt
+    if ($LASTEXITCODE -ne 0) { throw "pip install requirements failed" }
     if (Test-PythonImport $venvPy "telegram") {
-        Write-Host "OK: модуль telegram найден." -ForegroundColor Green
+        Write-Host "OK: telegram module found." -ForegroundColor Green
     } else {
-        Write-Host "venv есть, но telegram не установился. Пересоздаю venv..." -ForegroundColor Yellow
+        Write-Host "venv exists but telegram missing. Recreating venv..." -ForegroundColor Yellow
         Remove-Item -Recurse -Force .venv
-        $venvPy = $null
+        $venvPy = Join-Path $here ".venv\Scripts\python.exe"
     }
 }
 
 if (-not (Test-Path $venvPy)) {
-    Write-Host "==> Создаю новый venv..." -ForegroundColor Cyan
+    Write-Host "==> Creating new venv..." -ForegroundColor Cyan
     $created = $false
     foreach ($ver in @("3.12", "3.11", "3")) {
-        try {
-            & py "-$ver" -m venv .venv
-            if (Test-Path $venvPy) {
-                Write-Host "Использую Python $ver" -ForegroundColor Green
-                $created = $true
-                break
-            }
-        } catch {
-            Write-Host "Python $ver недоступен, пробую дальше..." -ForegroundColor DarkYellow
+        Write-Host "Trying Python $ver ..." -ForegroundColor DarkYellow
+        & py "-$ver" -m venv .venv
+        if (Test-Path $venvPy) {
+            Write-Host "Using Python $ver" -ForegroundColor Green
+            $created = $true
+            break
         }
     }
     if (-not $created) {
-        throw "Не удалось создать venv. Установи Python 3.12 с python.org"
+        throw "Could not create venv. Install Python 3.12 from python.org"
     }
     & $venvPy -m pip install --upgrade pip
+    if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed" }
     & $venvPy -m pip install -r requirements.txt
+    if ($LASTEXITCODE -ne 0) { throw "pip install requirements failed" }
     if (-not (Test-PythonImport $venvPy "telegram")) {
-        throw "pip install прошёл, но import telegram не работает. Пришли вывод pip install."
+        throw "telegram still missing after pip install. Paste full pip output."
     }
 }
 
 if (-not (Test-Path ".\.env")) {
-    Write-Host "WARN: нет файла .env — запусти bootstrap_windows.ps1 или создай .env вручную" -ForegroundColor Yellow
+    Write-Host "WARN: .env missing - run bootstrap next" -ForegroundColor Yellow
 } else {
-    Write-Host "OK: .env найден" -ForegroundColor Green
+    Write-Host "OK: .env found" -ForegroundColor Green
 }
 
-if (Test-Path $DataDir) {
-    Write-Host "OK: папка данных $DataDir" -ForegroundColor Green
-} else {
-    Write-Host "==> Создаю папку данных..." -ForegroundColor Cyan
+if (-not (Test-Path $DataDir)) {
+    Write-Host "==> Creating data folder..." -ForegroundColor Cyan
     New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
-    & $venvPy ".\scripts\init_data.py" --data-dir $DataDir
 }
+& $venvPy ".\scripts\init_data.py" --data-dir $DataDir
 
 Write-Host ""
-Write-Host "Проверка импортов бота..." -ForegroundColor Cyan
+Write-Host "Checking bot imports..." -ForegroundColor Cyan
 & $venvPy -c "from app.bot import run_bot; print('imports OK')"
+if ($LASTEXITCODE -ne 0) { throw "bot import failed" }
 
 Write-Host ""
-Write-Host "Готово. Запуск:" -ForegroundColor Green
-Write-Host "  cd $here"
+Write-Host "DONE. Start bot with:" -ForegroundColor Green
 Write-Host "  .\.venv\Scripts\python.exe main.py"
 Write-Host ""
-Read-Host "Нажми Enter чтобы закрыть окно"
+Read-Host "Press Enter to close"

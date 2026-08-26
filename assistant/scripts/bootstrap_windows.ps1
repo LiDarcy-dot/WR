@@ -1,18 +1,4 @@
 #Requires -Version 5.1
-<#
-.SYNOPSIS
-  Клонирует WR (если нужно), ставит зависимости, пишет .env, инициализирует папку данных.
-
-.EXAMPLE
-  cd $env:USERPROFILE\Desktop
-  # после clone:
-  cd WR\assistant
-  .\scripts\bootstrap_windows.ps1 `
-    -BotToken "ТВОЙ_ТОКЕН" `
-    -OwnerId 489485288 `
-    -DataDir "$env:USERPROFILE\Desktop\Assistant" `
-    -Model "qwen/qwen3.5-9b"
-#>
 param(
     [Parameter(Mandatory = $true)][string]$BotToken,
     [Parameter(Mandatory = $true)][long]$OwnerId,
@@ -29,16 +15,16 @@ $ErrorActionPreference = "Stop"
 
 function Require-Cmd($name) {
     if (-not (Get-Command $name -ErrorAction SilentlyContinue)) {
-        throw "Не найдено: $name. Установи и перезапусти PowerShell."
+        throw "Missing command: $name"
     }
 }
 
-Write-Host "==> Проверка Git и Python..." -ForegroundColor Cyan
+Write-Host "==> Checking Git and Python..." -ForegroundColor Cyan
 Require-Cmd git
 Require-Cmd py
 
 if (-not (Test-Path $InstallRoot)) {
-    Write-Host "==> Клонирую репозиторий в $InstallRoot ..." -ForegroundColor Cyan
+    Write-Host "==> Cloning repo to $InstallRoot ..." -ForegroundColor Cyan
     git clone $RepoUrl $InstallRoot
 }
 
@@ -50,33 +36,32 @@ git pull origin $Branch
 $assistant = Join-Path $InstallRoot "assistant"
 Set-Location $assistant
 
-Write-Host "==> venv + зависимости..." -ForegroundColor Cyan
+Write-Host "==> venv + dependencies..." -ForegroundColor Cyan
 $venvPy = Join-Path $assistant ".venv\Scripts\python.exe"
 $pythonOk = $false
 foreach ($ver in @("3.12", "3.11", "3")) {
-    try {
-        & py "-$ver" -m venv .venv
-        if (Test-Path $venvPy) {
-            Write-Host "venv на Python $ver" -ForegroundColor Green
-            $pythonOk = $true
-            break
-        }
-    } catch {
-        Write-Host "Python $ver: $($_.Exception.Message)" -ForegroundColor DarkYellow
+    Write-Host "Trying Python $ver ..." -ForegroundColor DarkYellow
+    & py "-$ver" -m venv .venv
+    if (Test-Path $venvPy) {
+        Write-Host "venv on Python $ver" -ForegroundColor Green
+        $pythonOk = $true
+        break
     }
 }
 if (-not $pythonOk) {
-    throw "Не удалось создать venv. Рекомендуется Python 3.12 с python.org"
+    throw "Could not create venv. Install Python 3.12 from python.org"
 }
 
 & $venvPy -m pip install --upgrade pip
+if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed" }
 & $venvPy -m pip install -r requirements.txt
+if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
 & $venvPy -c "import telegram; print('telegram OK')"
 if ($LASTEXITCODE -ne 0) {
-    throw "pip install не установил python-telegram-bot. Запусти .\scripts\repair_windows.ps1"
+    throw "python-telegram-bot not installed. Run .\scripts\repair_windows.ps1"
 }
 
-Write-Host "==> Пишу .env (локально, не в git)..." -ForegroundColor Cyan
+Write-Host "==> Writing .env (local only)..." -ForegroundColor Cyan
 @"
 TELEGRAM_BOT_TOKEN=$BotToken
 TELEGRAM_OWNER_ID=$OwnerId
@@ -84,22 +69,19 @@ LM_STUDIO_BASE_URL=$LmBaseUrl
 LM_STUDIO_MODEL=$Model
 ASSISTANT_DATA_DIR=$DataDir
 TIMEZONE=$Timezone
-"@ | Set-Content -Path ".\.env" -Encoding UTF8
+"@ | Set-Content -Path ".\.env" -Encoding ASCII
 
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
-Write-Host "==> Инициализация папки данных и БД..." -ForegroundColor Cyan
+Write-Host "==> Init data folder + DB..." -ForegroundColor Cyan
 & $venvPy ".\scripts\init_data.py" --data-dir $DataDir
+if ($LASTEXITCODE -ne 0) { throw "init_data failed" }
 
 Write-Host ""
-Write-Host "Готово." -ForegroundColor Green
-Write-Host "1) В LM Studio включи Local Server (порт 1234), загрузи модель $Model"
-Write-Host "2) VPN для Telegram на ПК желателен"
-Write-Host "3) Запуск бота:"
+Write-Host "DONE." -ForegroundColor Green
+Write-Host "1) LM Studio Local Server on port 1234, model $Model"
+Write-Host "2) VPN for Telegram recommended"
+Write-Host "3) Start:"
 Write-Host "   cd $assistant"
-Write-Host "   .\.venv\Scripts\Activate.ps1"
-Write-Host "   python main.py"
-Write-Host ""
-Write-Host "Или сразу:" -ForegroundColor Yellow
 Write-Host "   .\.venv\Scripts\python.exe main.py"
 Write-Host ""
-Read-Host "Нажми Enter чтобы закрыть окно"
+Read-Host "Press Enter to close"
