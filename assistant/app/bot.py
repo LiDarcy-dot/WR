@@ -45,6 +45,7 @@ from app.ui import (
     person_card_html,
     person_keyboard,
     remove_reply_keyboard,
+    resume_keyboard,
     section_keyboard,
     snooze_pick_keyboard,
     status_html,
@@ -157,15 +158,16 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_owner(update, settings):
         await update.effective_message.reply_text("Нет доступа.")
         return
-    # убрать старую нижнюю клавиатуру, если была
+    conn = context.application.bot_data["db"]
+    paused = repo.is_paused(conn)
     await update.effective_message.reply_text(
         welcome_html(),
         parse_mode=ParseMode.HTML,
         reply_markup=remove_reply_keyboard(),
     )
     await update.effective_message.reply_text(
-        "Что открыть?",
-        reply_markup=home_keyboard(),
+        "На паузе. Нажми «Снять паузу»." if paused else "Что открыть?",
+        reply_markup=home_keyboard(paused=paused),
     )
 
 
@@ -173,9 +175,11 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     settings: Settings = context.application.bot_data["settings"]
     if not _is_owner(update, settings):
         return
+    conn = context.application.bot_data["db"]
+    paused = repo.is_paused(conn)
     await update.effective_message.reply_text(
-        "Что открыть?",
-        reply_markup=home_keyboard(),
+        "На паузе. Нажми «Снять паузу»." if paused else "Что открыть?",
+        reply_markup=home_keyboard(paused=paused),
     )
 
 
@@ -197,9 +201,10 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
     conn = context.application.bot_data["db"]
     lm: LMStudioClient = context.application.bot_data["lm"]
+    paused = repo.is_paused(conn)
     await update.effective_message.reply_text(
         status_html(
-            paused=repo.is_paused(conn),
+            paused=paused,
             reason=repo.get_state(conn, "pause_reason", ""),
             lm_ok=await lm.healthcheck(),
             model=settings.lm_studio_model,
@@ -207,7 +212,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             n_bd=len(repo.list_birthdays(conn)),
         ),
         parse_mode=ParseMode.HTML,
-        reply_markup=home_keyboard(),
+        reply_markup=home_keyboard(paused=paused),
     )
 
 
@@ -219,7 +224,8 @@ async def cmd_pause(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     repo.set_paused(conn, True, "manual")
     conn.commit()
     await update.effective_message.reply_text(
-        "На паузе. Когда вернёшься — /resume или кнопка в /menu."
+        "На паузе.",
+        reply_markup=resume_keyboard(),
     )
 
 
@@ -230,7 +236,10 @@ async def cmd_resume(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     conn = context.application.bot_data["db"]
     repo.set_paused(conn, False)
     conn.commit()
-    await update.effective_message.reply_text("Снова на связи.")
+    await update.effective_message.reply_text(
+        "Снова на связи.",
+        reply_markup=home_keyboard(paused=False),
+    )
 
 
 async def _handle_chat_text(
@@ -242,6 +251,26 @@ async def _handle_chat_text(
 
     intent = classify_intent(text)
     pending = repo.get_latest_pending_action(conn, chat_id)
+
+    # Text resume while paused
+    low_early = text.lower().replace("ё", "е").strip()
+    if repo.is_paused(conn) and low_early in {
+        "продолжить",
+        "сними паузу",
+        "снять паузу",
+        "resume",
+        "/resume",
+        "старт",
+        "включись",
+        "работай",
+    }:
+        repo.set_paused(conn, False)
+        conn.commit()
+        await update.effective_message.reply_text(
+            "Снова на связи.",
+            reply_markup=home_keyboard(paused=False),
+        )
+        return
 
     if intent.kind == "confirm":
         if pending:
@@ -270,13 +299,16 @@ async def _handle_chat_text(
     if intent.kind == "recent_writes":
         await update.effective_message.reply_text(
             render_recent(conn),
-            reply_markup=home_keyboard(),
+            reply_markup=home_keyboard(paused=repo.is_paused(conn)),
         )
         return
 
     if intent.kind == "web_search":
         if repo.is_paused(conn):
-            await update.effective_message.reply_text("Сейчас пауза. /resume")
+            await update.effective_message.reply_text(
+                "Сейчас пауза.",
+                reply_markup=resume_keyboard(),
+            )
             return
         await update.effective_message.reply_text("Ищу…")
         await update.effective_message.chat.send_action(ChatAction.TYPING)
@@ -366,7 +398,10 @@ async def _handle_chat_text(
         )
 
     if repo.is_paused(conn):
-        await update.effective_message.reply_text("Сейчас пауза. /resume")
+        await update.effective_message.reply_text(
+            "Сейчас пауза.",
+            reply_markup=resume_keyboard(),
+        )
         return
 
     await update.effective_message.chat.send_action(ChatAction.TYPING)
@@ -470,18 +505,25 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         if action == "pause":
             repo.set_paused(conn, True, "manual")
             conn.commit()
-            await query.edit_message_text("На паузе.")
+            await query.edit_message_text(
+                "На паузе.",
+                reply_markup=resume_keyboard(),
+            )
             return
         if action == "resume":
             repo.set_paused(conn, False)
             conn.commit()
-            await query.edit_message_text("Снова на связи.")
+            await query.edit_message_text(
+                "Снова на связи.",
+                reply_markup=home_keyboard(paused=False),
+            )
             return
         if action == "status":
             lm: LMStudioClient = context.application.bot_data["lm"]
+            paused = repo.is_paused(conn)
             await query.edit_message_text(
                 status_html(
-                    paused=repo.is_paused(conn),
+                    paused=paused,
                     reason=repo.get_state(conn, "pause_reason", ""),
                     lm_ok=await lm.healthcheck(),
                     model=settings.lm_studio_model,
@@ -489,14 +531,18 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                     n_bd=len(repo.list_birthdays(conn)),
                 ),
                 parse_mode=ParseMode.HTML,
-                reply_markup=home_keyboard(),
+                reply_markup=home_keyboard(paused=paused),
             )
             return
 
     if data.startswith("menu:"):
         section = data.split(":", 1)[1]
         if section == "home":
-            await query.edit_message_text("Что открыть?", reply_markup=home_keyboard())
+            paused = repo.is_paused(conn)
+            await query.edit_message_text(
+                "На паузе. Нажми «Снять паузу»." if paused else "Что открыть?",
+                reply_markup=home_keyboard(paused=paused),
+            )
             return
         if section == "people":
             today = today_in_tz(settings.timezone)

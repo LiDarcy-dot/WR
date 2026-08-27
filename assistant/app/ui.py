@@ -17,7 +17,12 @@ def remove_reply_keyboard() -> ReplyKeyboardRemove:
     return ReplyKeyboardRemove()
 
 
-def home_keyboard() -> InlineKeyboardMarkup:
+def home_keyboard(*, paused: bool = False) -> InlineKeyboardMarkup:
+    pause_btn = (
+        InlineKeyboardButton("Снять паузу", callback_data="ctl:resume")
+        if paused
+        else InlineKeyboardButton("Пауза", callback_data="ctl:pause")
+    )
     return InlineKeyboardMarkup(
         [
             [
@@ -30,9 +35,18 @@ def home_keyboard() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton("Поиск", callback_data="menu:web"),
-                InlineKeyboardButton("Пауза", callback_data="ctl:pause"),
+                pause_btn,
             ],
             [InlineKeyboardButton("Статус", callback_data="ctl:status")],
+        ]
+    )
+
+
+def resume_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("Снять паузу", callback_data="ctl:resume")],
+            [InlineKeyboardButton("меню", callback_data="menu:home")],
         ]
     )
 
