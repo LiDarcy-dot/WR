@@ -57,18 +57,74 @@ def index_file(conn, data_root: Path, file_id: int) -> str:
         store.mark_file_error(conn, file_id, "file missing on disk")
         return "файл пропал с диска"
 
-    password = store.get_file_password(conn, file_id)
-    pages, err = extract_text_pages(path, password=password)
+    pages, err, used_pwd = _extract_with_candidates(conn, path, file_id)
     if err == "password":
+        n = len(store.list_password_candidates(conn))
         store.mark_file_needs_password(conn, file_id, "нужен пароль")
-        return "нужен пароль к файлу"
+        if n:
+            return (
+                f"нужен пароль к файлу ({n} известных не подошли). "
+                "Пришли ещё: «возможные пароли …»"
+            )
+        return "нужен пароль к файлу — напиши «возможные пароли …» или «пароль к файлу id: …»"
     if err:
         store.mark_file_error(conn, file_id, err)
         return f"не разобрал: {err}"
+
+    # remember working password even if page text is empty (scans)
+    if used_pwd:
+        store.set_file_password(conn, file_id, used_pwd)
+        store.add_password_candidates(conn, [used_pwd], source="unlocked")
+    else:
+        # opened without password — clear stale lock flag
+        conn.execute(
+            "UPDATE files SET needs_password = 0, error = NULL WHERE id = ?",
+            (file_id,),
+        )
+
     if not pages:
         store.mark_file_error(conn, file_id, "нет текста (возможно скан/картинка)")
         return "сохранил, но текста нет (скан/картинка — OCR позже)"
 
     chunks = pages_to_chunks(pages)
     store.replace_chunks(conn, file_id, chunks)
-    return f"проиндексирован: {len(pages)} стр., {len(chunks)} фрагм."
+    hint = " (пароль подошёл)" if used_pwd else ""
+    return f"проиндексирован: {len(pages)} стр., {len(chunks)} фрагм.{hint}"
+
+
+def _extract_with_candidates(
+    conn, path: Path, file_id: int
+) -> tuple[list[tuple[int, str]], str | None, str | None]:
+    """Try open PDF, then known file password, then candidate pool."""
+    pages, err = extract_text_pages(path, password=None)
+    if err != "password":
+        return pages, err, None
+
+    tried: set[str] = set()
+    ordered: list[str] = []
+    known = store.get_file_password(conn, file_id)
+    if known:
+        ordered.append(known)
+    for cand in store.list_password_candidates(conn):
+        if cand not in ordered:
+            ordered.append(cand)
+
+    for pwd in ordered:
+        if pwd in tried:
+            continue
+        tried.add(pwd)
+        pages, err = extract_text_pages(path, password=pwd)
+        if err != "password":
+            return pages, err, pwd
+    return [], "password", None
+
+
+def try_unlock_pending(conn, data_root: Path) -> list[str]:
+    """Retry all files that still need a password. Returns status lines."""
+    lines: list[str] = []
+    for row in store.list_files_needing_password(conn):
+        fid = int(row["id"])
+        name = row["original_name"] or f"id={fid}"
+        msg = index_file(conn, data_root, fid)
+        lines.append(f"• {name} (id={fid}): {msg}")
+    return lines

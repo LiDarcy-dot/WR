@@ -75,9 +75,22 @@ cd $env:USERPROFILE\Desktop\WR\assistant
 3. `готово` — закрыть приём.  
 4. `какие файлы` — список.  
 5. Вопрос: `как выполнить Aging? посмотри в мануалах` — ответ с ссылками на файл и страницу.  
-6. Запароленный PDF: `пароль к файлу 12: secret` (id смотри в списке).
+6. Запароленный PDF: `пароль к файлу 12: secret` (id смотри в списке).  
+   Или пул сразу: `возможные пароли pass1 pass2 pass3` — бот сам переберёт на всех файлах, где нужен пароль.
 
 Файлы лежат в `Desktop\Assistant\documents\…`, индекс — в SQLite.
+
+---
+
+## Обновление кода (команда, не двойной клик по .ps1)
+
+В **PowerShell** вставь целиком:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$t=Join-Path $env:USERPROFILE 'Desktop\Assistant'; $tmp=Join-Path $env:TEMP ('WR-'+[guid]::NewGuid().ToString('N')); git clone --branch cursor/local-assistant-scaffold-d6ce --depth 1 https://github.com/LiDarcy-dot/WR.git $tmp; if(Test-Path (Join-Path $t 'app')){Remove-Item (Join-Path $t 'app') -Recurse -Force}; Copy-Item (Join-Path $tmp 'assistant\app') (Join-Path $t 'app') -Recurse -Force; Copy-Item (Join-Path $tmp 'assistant\main.py') (Join-Path $t 'main.py') -Force; Copy-Item (Join-Path $tmp 'assistant\requirements.txt') (Join-Path $t 'requirements.txt') -Force; Copy-Item (Join-Path $tmp 'assistant\scripts\UPDATE.cmd') (Join-Path $t 'UPDATE.cmd') -Force; Remove-Item $tmp -Recurse -Force; & (Join-Path $t '.venv\Scripts\python.exe') -m pip install -q -r (Join-Path $t 'requirements.txt'); & (Join-Path $t '.venv\Scripts\python.exe') -c \"from app.files.store import parse_password_candidates; print('OK', len(parse_password_candidates('возможные пароли a b')))\"; Write-Host 'UPDATE OK — перезапусти START_BOT.bat' -ForegroundColor Green"
+```
+
+Либо после первого такого обновления можно дважды кликнуть `Desktop\Assistant\UPDATE.cmd` (это `.cmd`, не `.ps1` — блокнот не откроется).
 
 ---
 

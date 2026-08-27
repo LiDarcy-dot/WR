@@ -22,9 +22,9 @@ from app.config import Settings
 from app.db import connect, init_db
 from app.db import repo
 from app.files import store as file_store
-from app.files.ingest import index_file, save_telegram_bytes
+from app.files.ingest import index_file, save_telegram_bytes, try_unlock_pending
 from app.files.query import DOCS_SYSTEM, build_docs_context, list_files_html
-from app.files.store import category_slug, search_chunks
+from app.files.store import category_slug, parse_password_candidates, search_chunks
 from app.intent import classify_intent
 from app.llm.lm_studio import LMStudioClient, WEB_SYSTEM
 from app.memory.formatters import (
@@ -343,6 +343,7 @@ async def _handle_chat_text(
         "ask_docs",
         "list_files",
         "file_password",
+        "password_candidates",
         "ingest_start",
     }:
         # comment for next file(s)
@@ -363,6 +364,10 @@ async def _handle_chat_text(
 
     if intent.kind == "file_password":
         await _handle_file_password(update, context, text)
+        return
+
+    if intent.kind == "password_candidates":
+        await _handle_password_candidates(update, context, text)
         return
 
     if intent.kind == "ask_docs":
@@ -615,7 +620,7 @@ async def _handle_file_password(
     if not password:
         await update.effective_message.reply_text(
             "Формат: <code>пароль к файлу 12: secret</code>\n"
-            "или для последнего запароленного: <code>пароль: secret</code>",
+            "или список: <code>возможные пароли a b c</code>",
             parse_mode=ParseMode.HTML,
         )
         return
@@ -635,10 +640,48 @@ async def _handle_file_password(
         file_id = int(row["id"])
 
     file_store.set_file_password(conn, file_id, password)
+    file_store.add_password_candidates(conn, [password], source="user_exact")
     msg = index_file(conn, settings.assistant_data_dir, file_id)
     conn.commit()
     name = row["original_name"] or f"id={file_id}"
     await update.effective_message.reply_text(f"{name}: {msg}")
+
+
+async def _handle_password_candidates(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, text: str
+) -> None:
+    settings: Settings = context.application.bot_data["settings"]
+    conn = context.application.bot_data["db"]
+    passwords = parse_password_candidates(text)
+    if not passwords:
+        await update.effective_message.reply_text(
+            "Не разобрал пароли.\n"
+            "Пример: <code>возможные пароли pass1 pass2</code>\n"
+            "или с новой строки после фразы «возможные пароли».",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    added = file_store.add_password_candidates(conn, passwords, source="user")
+    total = len(file_store.list_password_candidates(conn))
+    locked = file_store.list_files_needing_password(conn)
+    lines = [
+        f"Принял пароли: новых {added}, всего в пуле {total}.",
+    ]
+    if locked:
+        lines.append(f"Пробую на {len(locked)} файлах без пароля…")
+        await update.effective_message.reply_text("\n".join(lines))
+        results = try_unlock_pending(conn, settings.assistant_data_dir)
+        conn.commit()
+        body = "\n".join(results) if results else "Нечего пробовать."
+        if len(body) > 3500:
+            body = body[:3500] + "\n…"
+        await update.effective_message.reply_text(body)
+        return
+
+    conn.commit()
+    lines.append("Сейчас нет файлов, ждущих пароль — сохраню пул на будущее.")
+    await update.effective_message.reply_text("\n".join(lines))
 
 
 async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

@@ -140,3 +140,58 @@ def test_password_reindex(tmp_path: Path) -> None:
     assert "пароль" not in msg2 or "нет текста" in msg2 or "проиндексирован" in msg2
     row2 = file_store.get_file(conn, fid)
     assert row2["needs_password"] == 0
+
+
+def test_password_candidates_unlock(tmp_path: Path) -> None:
+    from pypdf import PdfWriter
+
+    from app.files.ingest import try_unlock_pending
+    from app.files.store import parse_password_candidates
+
+    assert classify_intent("возможные пароли a b c").kind == "password_candidates"
+    assert parse_password_candidates("возможные пароли alpha beta") == [
+        "alpha",
+        "beta",
+    ]
+    assert parse_password_candidates('пароли: one, "two three", four') == [
+        "two three",
+        "one",
+        "four",
+    ]
+
+    root = tmp_path / "data"
+    ensure_data_layout(root)
+    db = root / "db" / "c.sqlite3"
+    init_db(db)
+    conn = connect(db)
+    repo.ensure_runtime_schema(conn)
+
+    path = root / "documents" / "manuals"
+    path.mkdir(parents=True, exist_ok=True)
+    pdf = path / "locked2.pdf"
+    writer = PdfWriter()
+    writer.add_blank_page(width=200, height=200)
+    writer.encrypt("rightpass")
+    writer.write(pdf)
+
+    fid = file_store.insert_file(
+        conn,
+        relative_path="documents/manuals/locked2.pdf",
+        original_name="locked2.pdf",
+        mime="application/pdf",
+        sha256="def",
+        category="manuals",
+        comment=None,
+        session_id=None,
+    )
+    assert "пароль" in index_file(conn, root, fid)
+
+    added = file_store.add_password_candidates(
+        conn, ["wrong1", "rightpass", "wrong2"], source="user"
+    )
+    assert added == 3
+    lines = try_unlock_pending(conn, root)
+    assert lines
+    row = file_store.get_file(conn, fid)
+    assert row["needs_password"] == 0
+    assert file_store.get_file_password(conn, fid) == "rightpass"

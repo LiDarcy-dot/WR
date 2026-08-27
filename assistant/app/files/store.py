@@ -62,6 +62,13 @@ def ensure_files_schema(conn: sqlite3.Connection) -> None:
             password TEXT NOT NULL,
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
+
+        CREATE TABLE IF NOT EXISTS password_candidates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            password TEXT NOT NULL UNIQUE,
+            source TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
         """
     )
     # additive columns for older DBs
@@ -275,6 +282,123 @@ def get_file_password(conn: sqlite3.Connection, file_id: int) -> str | None:
         (file_id,),
     ).fetchone()
     return row["password"] if row else None
+
+
+def add_password_candidates(
+    conn: sqlite3.Connection,
+    passwords: list[str],
+    *,
+    source: str = "user",
+) -> int:
+    """Insert new candidate passwords. Returns how many were newly added."""
+    added = 0
+    for raw in passwords:
+        pwd = (raw or "").strip()
+        if not pwd or len(pwd) > 200:
+            continue
+        cur = conn.execute(
+            """
+            INSERT OR IGNORE INTO password_candidates (password, source)
+            VALUES (?, ?)
+            """,
+            (pwd, source),
+        )
+        if cur.rowcount:
+            added += 1
+    return added
+
+
+def list_password_candidates(conn: sqlite3.Connection) -> list[str]:
+    rows = conn.execute(
+        "SELECT password FROM password_candidates ORDER BY id ASC"
+    ).fetchall()
+    return [r["password"] for r in rows]
+
+
+def list_files_needing_password(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return list(
+        conn.execute(
+            """
+            SELECT * FROM files
+            WHERE needs_password = 1
+            ORDER BY id ASC
+            """
+        ).fetchall()
+    )
+
+
+def parse_password_candidates(text: str) -> list[str]:
+    """
+    Parse lines like:
+      возможные пароли a b c
+      возможные пароли:
+      pass1
+      pass2
+      пароли: one, two, "multi word"
+    """
+    t = (text or "").strip()
+    if not t:
+        return []
+    low = t.lower().replace("ё", "е")
+    markers = (
+        "возможные пароли",
+        "возможный пароль",
+        "возможные пароль",
+        "кандидаты паролей",
+        "кандидаты пароля",
+        "список паролей",
+        "попробуй пароли",
+        "подбери пароль",
+        "подбери пароли",
+        "пароли:",
+        "пароли ",
+    )
+    rest = None
+    for m in markers:
+        idx = low.find(m)
+        if idx >= 0:
+            rest = t[idx + len(m) :]
+            break
+    if rest is None:
+        return []
+    rest = rest.lstrip(" \t:-–—")
+    found: list[str] = []
+    for q in re.findall(r'"([^"]+)"|\'([^\']+)\'', rest):
+        val = q[0] or q[1]
+        if val.strip():
+            found.append(val.strip())
+    cleaned = re.sub(r'"[^"]*"|\'[^\']*\'', " ", rest)
+    for part in re.split(r"[\s,;|]+", cleaned):
+        p = part.strip()
+        if not p:
+            continue
+        if p.lower().replace("ё", "е") in {
+            "пароль",
+            "пароли",
+            "возможные",
+            "возможный",
+            "попробуй",
+            "подбери",
+            "список",
+            "кандидаты",
+            "к",
+            "для",
+            "от",
+            "файлу",
+            "файла",
+            "файл",
+            "pdf",
+        }:
+            continue
+        found.append(p)
+    # unique keep order
+    out: list[str] = []
+    seen: set[str] = set()
+    for p in found:
+        if p not in seen:
+            seen.add(p)
+            out.append(p)
+    return out
 
 
 def replace_chunks(

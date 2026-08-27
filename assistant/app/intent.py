@@ -142,6 +142,26 @@ def classify_intent(text: str) -> Intent:
     if low in INGEST_END or low.startswith("готово") or low in {"все", "всё"}:
         return Intent("ingest_end", t)
 
+    # password candidate list BEFORE single-file password
+    if any(
+        x in low
+        for x in (
+            "возможные пароли",
+            "возможный пароль",
+            "возможные пароль",
+            "кандидаты парол",
+            "список парол",
+            "попробуй пароли",
+            "подбери пароль",
+            "подбери пароли",
+        )
+    ) or (
+        ("пароли:" in low or low.startswith("пароли "))
+        and "к файлу" not in low
+        and "к pdf" not in low
+    ):
+        return Intent("password_candidates", t)
+
     if "пароль" in low and any(
         x in low for x in ("файл", "pdf", "к ", "для ", "от ", ":", "id")
     ):

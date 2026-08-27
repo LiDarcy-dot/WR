@@ -36,6 +36,10 @@ $bat = Join-Path $temp "assistant\START_BOT.bat"
 if (Test-Path $bat) {
     Copy-Item $bat (Join-Path $Target "START_BOT.bat") -Force
 }
+$upd = Join-Path $temp "assistant\scripts\UPDATE.cmd"
+if (Test-Path $upd) {
+    Copy-Item $upd (Join-Path $Target "UPDATE.cmd") -Force
+}
 
 Remove-Item -LiteralPath $temp -Recurse -Force
 
