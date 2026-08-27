@@ -165,6 +165,24 @@ def test_intent_confirm_and_birthdays() -> None:
     )
 
 
+def test_calendar_month_marks(tmp_path: Path) -> None:
+    from app.calendar_view import events_for_month, month_grid
+
+    db = tmp_path / "cal.sqlite3"
+    init_db(db)
+    conn = connect(db)
+    repo.upsert_person_with_birthday_and_attrs(
+        conn, "Папа", relation="папа", month=5, day=25, year=1970
+    )
+    conn.commit()
+    ev = events_for_month(conn, 2026, 5)
+    assert 25 in ev
+    assert any(x.kind == "birthday" for x in ev[25])
+    grid = month_grid(2026, 5)
+    assert grid[0]  # has weeks
+    assert any(25 in week for week in grid)
+
+
 def test_birthday_order_and_memory(tmp_path: Path) -> None:
     from datetime import date
 
