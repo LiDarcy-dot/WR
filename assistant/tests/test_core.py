@@ -199,6 +199,8 @@ def test_people_list_html(tmp_path: Path) -> None:
     assert "Папа" in html
     assert "мая" in html
 
+
+def test_week_agenda(tmp_path: Path) -> None:
     from datetime import date
 
     from app.calendar_view import week_agenda
