@@ -26,6 +26,17 @@ def test_intent_file_flows() -> None:
     assert classify_intent("как сделать чай").kind == "chat"
     # look-in-storage must not open ingest
     assert classify_intent("посмотри в хранилище про Aging").kind == "ask_docs"
+    # temp read: wait for file, do not search library yet
+    assert (
+        classify_intent(
+            "сейчас я скину файл- не сохраняй его а прочитай и напиши "
+            "как будешь ответить на вопросы я задам пару вопросов по этому файлу"
+        ).kind
+        == "temp_read_start"
+    )
+    assert classify_intent("скину файл, только прочитай").kind == "temp_read_start"
+    assert classify_intent("забей").kind == "abort"
+    assert classify_intent("передумал").kind == "abort"
 
 
 def test_txt_ingest_and_search(tmp_path: Path) -> None:

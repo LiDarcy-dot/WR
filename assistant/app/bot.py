@@ -25,6 +25,7 @@ from app.files import store as file_store
 from app.files.ingest import index_file, save_telegram_bytes, try_unlock_pending
 from app.files.query import DOCS_SYSTEM, build_docs_context, list_files_html
 from app.files.store import category_slug, parse_password_candidates, search_chunks
+from app.files import temp_session
 from app.intent import classify_intent
 from app.llm.lm_studio import LMStudioClient, WEB_SYSTEM
 from app.memory.formatters import (
@@ -283,9 +284,22 @@ async def _handle_chat_text(
         await update.effective_message.reply_text("Нечего подтверждать.")
         return
 
+    if intent.kind == "abort":
+        cleared = await _abort_active_sessions(update, context)
+        if pending:
+            await cancel_pending(update, context, pending)
+            return
+        if cleared:
+            return
+        await update.effective_message.reply_text("Нечего отменять.")
+        return
+
     if intent.kind == "cancel":
         if pending:
             await cancel_pending(update, context, pending)
+            return
+        cleared = await _abort_active_sessions(update, context)
+        if cleared:
             return
         await update.effective_message.reply_text("Нечего отменять.")
         return
@@ -307,10 +321,80 @@ async def _handle_chat_text(
         )
         return
 
+    # --- temporary file read (not saved to library) ---
+    temp = temp_session.get_session(context.application.bot_data, chat_id)
+
+    if intent.kind == "temp_read_start":
+        # don't keep library ingest open in parallel
+        open_ingest = file_store.get_open_ingest(conn, chat_id)
+        if open_ingest:
+            file_store.close_ingest_session(conn, int(open_ingest["id"]))
+            conn.commit()
+        temp_session.start_waiting(
+            context.application.bot_data, chat_id, note=text
+        )
+        await update.effective_message.reply_text(
+            "Ок. Жду файл — в постоянное хранилище не положу.\n"
+            "Прочитаю и отвечу по нему.\n"
+            "Передумаешь — «забей» / «отмена»."
+        )
+        return
+
+    if intent.kind == "temp_read_end" and temp:
+        temp_session.clear_session(context.application.bot_data, chat_id)
+        await update.effective_message.reply_text(
+            "Ок, временный файл закрыл. В хранилище его нет."
+        )
+        return
+
+    if temp and temp.get("status") == "waiting_file":
+        # still waiting — don't search library / don't treat as chat yet
+        if intent.kind in {
+            "password_candidates",
+            "file_password",
+            "list_files",
+            "ask_docs",
+            "web_search",
+            "ingest_start",
+        }:
+            pass  # fall through to those handlers below
+        else:
+            await update.effective_message.reply_text(
+                "Жду файл для временного чтения.\n"
+                "Или «забей», если передумал."
+            )
+            return
+
+    if temp and temp.get("status") in {"ready", "needs_password"}:
+        if intent.kind in {
+            "ask_docs",
+            "list_files",
+            "web_search",
+            "ingest_start",
+            "list_birthdays",
+            "recent_writes",
+            "password_candidates",
+            "file_password",
+            "temp_read_start",
+        }:
+            pass
+        elif temp.get("status") == "needs_password":
+            await update.effective_message.reply_text(
+                "Файл запаролен. Пришли «возможные пароли …» или "
+                "«пароль: secret», либо «забей»."
+            )
+            return
+        else:
+            await _answer_temp_file(update, context, text)
+            return
+
     # --- file library ---
     open_session = file_store.get_open_ingest(conn, chat_id)
 
     if intent.kind == "ingest_start":
+        # close temp-read if any
+        if temp:
+            temp_session.clear_session(context.application.bot_data, chat_id)
         cat = category_slug(text)
         sid = file_store.open_ingest_session(
             conn, chat_id, category=cat, title=text[:200]
@@ -320,7 +404,8 @@ async def _handle_chat_text(
             "Ок, жду файлы.\n"
             f"Папка: <code>{cat}</code>\n"
             "Можно писать комментарии между файлами.\n"
-            "Когда закончишь — «готово» или «всё».",
+            "Когда закончишь — «готово» или «всё».\n"
+            "Передумаешь — «забей».",
             parse_mode=ParseMode.HTML,
         )
         return
@@ -338,6 +423,7 @@ async def _handle_chat_text(
     if open_session and intent.kind not in {
         "confirm",
         "cancel",
+        "abort",
         "web_search",
         "list_birthdays",
         "ask_docs",
@@ -345,6 +431,7 @@ async def _handle_chat_text(
         "file_password",
         "password_candidates",
         "ingest_start",
+        "temp_read_start",
     }:
         # comment for next file(s)
         file_store.set_pending_comment(conn, int(open_session["id"]), text)
@@ -616,7 +703,35 @@ async def _handle_file_password(
 ) -> None:
     settings: Settings = context.application.bot_data["settings"]
     conn = context.application.bot_data["db"]
+    chat_id = update.effective_chat.id
     file_id, password = _parse_file_password(text)
+
+    temp = temp_session.get_session(context.application.bot_data, chat_id)
+    if temp and temp.get("status") == "needs_password" and password and file_id is None:
+        if not temp.get("path"):
+            await update.effective_message.reply_text("Временный файл потерян — пришли снова.")
+            temp_session.clear_session(context.application.bot_data, chat_id)
+            return
+        body, err = temp_session.unlock_temp_path(temp["path"], password)
+        if err == "password":
+            await update.effective_message.reply_text("Пароль не подошёл. Ещё вариант?")
+            return
+        if err:
+            await update.effective_message.reply_text(f"Не разобрал: {err}")
+            return
+        file_store.add_password_candidates(conn, [password], source="temp_unlock")
+        conn.commit()
+        temp_session.mark_ready(
+            context.application.bot_data,
+            chat_id,
+            name=temp.get("name") or "file",
+            text=body,
+            path=temp.get("path"),
+            needs_password=False,
+        )
+        await _reply_temp_ready(update, context)
+        return
+
     if not password:
         await update.effective_message.reply_text(
             "Формат: <code>пароль к файлу 12: secret</code>\n"
@@ -652,6 +767,7 @@ async def _handle_password_candidates(
 ) -> None:
     settings: Settings = context.application.bot_data["settings"]
     conn = context.application.bot_data["db"]
+    chat_id = update.effective_chat.id
     passwords = parse_password_candidates(text)
     if not passwords:
         await update.effective_message.reply_text(
@@ -664,12 +780,42 @@ async def _handle_password_candidates(
 
     added = file_store.add_password_candidates(conn, passwords, source="user")
     total = len(file_store.list_password_candidates(conn))
-    locked = file_store.list_files_needing_password(conn)
     lines = [
         f"Принял пароли: новых {added}, всего в пуле {total}.",
     ]
+
+    temp = temp_session.get_session(context.application.bot_data, chat_id)
+    if temp and temp.get("status") == "needs_password" and temp.get("path"):
+        for pwd in passwords:
+            body, err = temp_session.unlock_temp_path(temp["path"], pwd)
+            if err == "password":
+                continue
+            if err:
+                lines.append(f"Временный: {err}")
+                break
+            temp_session.mark_ready(
+                context.application.bot_data,
+                chat_id,
+                name=temp.get("name") or "file",
+                text=body or "",
+                path=temp.get("path"),
+                needs_password=False,
+            )
+            lines.append("Временный файл открылся паролем.")
+            conn.commit()
+            await update.effective_message.reply_text("\n".join(lines))
+            if body:
+                await _reply_temp_ready(update, context)
+            else:
+                await update.effective_message.reply_text(
+                    "Открыл, но текста нет. «забей» — закрыть."
+                )
+            return
+        lines.append("К временному файлу пароли не подошли.")
+
+    locked = file_store.list_files_needing_password(conn)
     if locked:
-        lines.append(f"Пробую на {len(locked)} файлах без пароля…")
+        lines.append(f"Пробую на {len(locked)} файлах в хранилище…")
         await update.effective_message.reply_text("\n".join(lines))
         results = try_unlock_pending(conn, settings.assistant_data_dir)
         conn.commit()
@@ -680,8 +826,99 @@ async def _handle_password_candidates(
         return
 
     conn.commit()
-    lines.append("Сейчас нет файлов, ждущих пароль — сохраню пул на будущее.")
+    if len(lines) == 1:
+        lines.append("Сейчас нет файлов, ждущих пароль — сохраню пул на будущее.")
     await update.effective_message.reply_text("\n".join(lines))
+
+
+async def _abort_active_sessions(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> bool:
+    """Clear temp-read and/or library ingest. Returns True if something was cleared."""
+    conn = context.application.bot_data["db"]
+    chat_id = update.effective_chat.id
+    parts: list[str] = []
+
+    temp = temp_session.get_session(context.application.bot_data, chat_id)
+    if temp:
+        temp_session.clear_session(context.application.bot_data, chat_id)
+        parts.append("временное чтение отменил")
+
+    open_session = file_store.get_open_ingest(conn, chat_id)
+    if open_session:
+        file_store.close_ingest_session(conn, int(open_session["id"]))
+        conn.commit()
+        parts.append("приём в хранилище закрыл")
+
+    if not parts:
+        return False
+    await update.effective_message.reply_text("Ок, " + " и ".join(parts) + ".")
+    return True
+
+
+async def _reply_temp_ready(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    chat_id = update.effective_chat.id
+    sess = temp_session.get_session(context.application.bot_data, chat_id)
+    if not sess or sess.get("status") != "ready":
+        return
+    name = sess.get("name") or "файл"
+    note = sess.get("note")
+    lm: LMStudioClient = context.application.bot_data["lm"]
+    prompt = (
+        "Пользователь прислал временный файл (не в хранилище).\n"
+        f"Имя: {name}\n"
+    )
+    if note:
+        prompt += f"Его просьба к сессии: {note}\n"
+    prompt += (
+        "Кратко (3–6 предложений) опиши, КАК будешь отвечать на вопросы по файлу: "
+        "что понял по содержанию, как будешь ссылаться на страницы, что уточнишь. "
+        "Не вываливай весь текст файла."
+    )
+    await update.effective_message.chat.send_action(ChatAction.TYPING)
+    try:
+        answer = await lm.chat_plain(
+            system_prompt=temp_session.TEMP_SYSTEM,
+            user_text=temp_session.build_temp_context(sess, prompt),
+            temperature=0.2,
+        )
+    except Exception as exc:  # noqa: BLE001
+        answer = (
+            f"Файл «{name}» прочитал (временно, без сохранения).\n"
+            f"Модель не ответила ({exc}). Задавай вопросы — отвечу по тексту.\n"
+            "«забей» — закрыть сессию."
+        )
+    if len(answer) > 3900:
+        answer = answer[:3900] + "\n…"
+    answer = answer + "\n\nЗадавай вопросы. «забей» — закрыть."
+    await update.effective_message.reply_text(answer)
+
+
+async def _answer_temp_file(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, text: str
+) -> None:
+    chat_id = update.effective_chat.id
+    sess = temp_session.get_session(context.application.bot_data, chat_id)
+    if not sess or not sess.get("text"):
+        await update.effective_message.reply_text("Временного файла нет.")
+        return
+    lm: LMStudioClient = context.application.bot_data["lm"]
+    await update.effective_message.reply_text("Смотрю во временном файле…")
+    await update.effective_message.chat.send_action(ChatAction.TYPING)
+    try:
+        answer = await lm.chat_plain(
+            system_prompt=temp_session.TEMP_SYSTEM,
+            user_text=temp_session.build_temp_context(sess, text),
+            temperature=0.2,
+        )
+    except Exception as exc:  # noqa: BLE001
+        await update.effective_message.reply_text(f"Модель не ответила: {exc}")
+        return
+    if len(answer) > 3900:
+        answer = answer[:3900] + "\n…"
+    await update.effective_message.reply_text(answer)
 
 
 async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -703,20 +940,11 @@ async def _ingest_media(
 
     conn = context.application.bot_data["db"]
     chat_id = update.effective_chat.id
+    bot_data = context.application.bot_data
+    temp = temp_session.get_session(bot_data, chat_id)
     session = file_store.get_open_ingest(conn, chat_id)
-    if not session:
-        await update.effective_message.reply_text(
-            "Сейчас не принимаю файлы в хранилище.\n"
-            "Скажи сначала: «сейчас скину файлы, сохрани» — и пришли снова."
-        )
-        return
 
     msg = update.effective_message
-    caption = (msg.caption or "").strip() or None
-    comment = file_store.take_pending_comment(conn, int(session["id"]))
-    if caption:
-        comment = f"{comment}\n{caption}".strip() if comment else caption
-
     try:
         if kind == "document" and msg.document:
             tg_file = await msg.document.get_file()
@@ -741,6 +969,74 @@ async def _ingest_media(
         await update.effective_message.reply_text("Слишком большой файл (>45 МБ).")
         return
 
+    # --- temporary read mode ---
+    if temp and temp.get("status") in {"waiting_file", "needs_password", "ready"}:
+        # if ready and new file arrives without new start — replace temp file
+        await update.effective_message.reply_text("Читаю (без сохранения)…")
+        body, err, path = temp_session.load_bytes_to_temp_text(
+            conn, settings.assistant_data_dir, raw, original
+        )
+        if err == "password":
+            temp_session.mark_ready(
+                bot_data,
+                chat_id,
+                name=original,
+                text="",
+                path=path,
+                needs_password=True,
+            )
+            await update.effective_message.reply_text(
+                f"«{original}» запаролен. Напиши «возможные пароли …» или «пароль: …».\n"
+                "«забей» — отменить."
+            )
+            return
+        if err == "empty":
+            temp_session.mark_ready(
+                bot_data,
+                chat_id,
+                name=original,
+                text="",
+                path=path,
+                needs_password=False,
+            )
+            await update.effective_message.reply_text(
+                f"«{original}» принял временно, но текста нет (скан/картинка).\n"
+                "«забей» — закрыть."
+            )
+            return
+        if err:
+            temp_session.clear_session(bot_data, chat_id)
+            await update.effective_message.reply_text(f"Не разобрал файл: {err}")
+            return
+        caption = (msg.caption or "").strip()
+        if caption:
+            prev_note = temp.get("note")
+            temp["note"] = f"{prev_note}\n{caption}".strip() if prev_note else caption
+        temp_session.mark_ready(
+            bot_data,
+            chat_id,
+            name=original,
+            text=body,
+            path=path,
+            needs_password=False,
+        )
+        await _reply_temp_ready(update, context)
+        return
+
+    # --- library ingest ---
+    if not session:
+        await update.effective_message.reply_text(
+            "Сейчас не принимаю файлы.\n"
+            "• В хранилище: «сейчас скину файлы, сохрани»\n"
+            "• Только прочитать: «скину файл, не сохраняй, прочитай»"
+        )
+        return
+
+    caption = (msg.caption or "").strip() or None
+    comment = file_store.take_pending_comment(conn, int(session["id"]))
+    if caption:
+        comment = f"{comment}\n{caption}".strip() if comment else caption
+
     file_id, save_msg = await save_telegram_bytes(
         conn=conn,
         data_root=settings.assistant_data_dir,
@@ -757,7 +1053,7 @@ async def _ingest_media(
     note = f"\nКомментарий: {comment}" if comment else ""
     await update.effective_message.reply_text(
         f"{save_msg}\n{index_msg}{note}\n"
-        "Можно ещё файл или комментарий. «готово» — закрыть приём."
+        "Можно ещё файл или комментарий. «готово» — закрыть приём. «забей» — отмена."
     )
 
 

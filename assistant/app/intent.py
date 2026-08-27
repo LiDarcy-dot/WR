@@ -14,6 +14,28 @@ CANCEL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Abort active file/temp session (broader than cancel-of-card)
+ABORT_PHRASES = (
+    "забей",
+    "забудь",
+    "отбой",
+    "пофиг",
+    "передумал",
+    "не будем",
+    "закрывай",
+    "закрой сессию",
+    "закрой файл",
+    "хватит читать",
+    "закончить чтение",
+    "закончили с файлом",
+    "всё отмена",
+    "все отмена",
+    "ладно не надо",
+    "не надо файл",
+    "отмени приём",
+    "отмени прием",
+)
+
 WEB_HINTS = (
     "найди в инет",
     "найди в интернет",
@@ -71,11 +93,96 @@ INGEST_END = (
     "приём закрыт",
 )
 
+WILL_SEND_RE = re.compile(
+    r"(?:^|[^а-яёa-z0-9])"
+    r"(?:сейчас\s+|щас?\s+)?"
+    r"(?:скину|пришлю|отправлю|жду\s+файл)"
+    r"(?:[^а-яёa-z0-9]|$)",
+    re.IGNORECASE,
+)
+WILL_SEND_EXTRA = (
+    "вот файл",
+    "сейчас файл",
+)
+
+NO_SAVE = (
+    "не сохраня",
+    "без сохран",
+    "не клади",
+    "не в хранилищ",
+    "временно",
+    "только прочитай",
+    "только посмотри",
+    "не надо сохранять",
+    "не нужно сохранять",
+)
+
 
 @dataclass
 class Intent:
     kind: str
     raw: str
+
+
+def _will_send_file(low: str) -> bool:
+    if WILL_SEND_RE.search(low):
+        return True
+    return any(x in low for x in WILL_SEND_EXTRA)
+
+
+def is_abort_phrase(text: str) -> bool:
+    t = (text or "").strip()
+    if not t:
+        return False
+    low = t.lower().replace("ё", "е")
+    if len(t) <= 80 and any(p in low for p in ABORT_PHRASES):
+        return True
+    return False
+
+
+def _wants_library_save(low: str) -> bool:
+    if any(x in low for x in NO_SAVE):
+        return False
+    return any(
+        x in low
+        for x in (
+            "сохрани",
+            "положи в хранилищ",
+            "в хранилище",
+            "запиши в баз",
+        )
+    )
+
+
+def _is_temp_read_start(low: str) -> bool:
+    will_send = _will_send_file(low)
+    no_save = any(x in low for x in NO_SAVE)
+    read_it = any(
+        x in low
+        for x in (
+            "прочитай",
+            "прочти",
+            "посмотри",
+            "разбери",
+            "по этому файл",
+            "вопросы по",
+            "задам",
+            "как будешь отвечать",
+            "как будешь ответит",
+        )
+    )
+    about_file = any(
+        x in low for x in ("файл", "мануал", "документ", "pdf", "доки", "инструкц")
+    )
+    if _wants_library_save(low):
+        return False
+    if will_send and about_file and (no_save or read_it):
+        return True
+    if no_save and about_file and (will_send or read_it):
+        return True
+    if will_send and no_save:
+        return True
+    return False
 
 
 def classify_intent(text: str) -> Intent:
@@ -89,60 +196,81 @@ def classify_intent(text: str) -> Intent:
 
     low = t.lower().replace("ё", "е")
 
-    # docs Q&A before ingest: «посмотри в хранилище…» must not open upload
-    docs_scope = any(
-        x in low
-        for x in (
-            "мануал",
-            "мануалах",
-            "файл",
-            "файлах",
-            "документ",
-            "документах",
-            "хранилищ",
-            "инструкц",
-            "pdf",
-        )
-    )
-    docs_ask = any(
-        x in low
-        for x in (
-            "посмотри",
-            "прочитай",
-            "прочти",
-            "найди в",
-            "согласно",
-            "по мануал",
-            "в мануал",
-            "в файл",
-            "в документ",
-            "в хранилищ",
-            "что написано",
-            "как выполнить",
-            "как сделать",
-            "как запустить",
-            "как провести",
-            "aging",
-        )
-    )
-    if docs_scope and docs_ask:
-        return Intent("ask_docs", t)
-    if "мануал" in low and any(
-        x in low for x in ("как", "найди", "посмотри", "где", "что написано", "про ")
-    ):
-        return Intent("ask_docs", t)
+    if is_abort_phrase(t):
+        return Intent("abort", t)
 
-    if any(x in low for x in INGEST_START) or (
-        "сохрани" in low
-        and any(x in low for x in ("файл", "мануал", "документ", "pdf", "их"))
-        and not any(x in low for x in ("что сохрани", "что ты сохрани"))
+    if _is_temp_read_start(low):
+        return Intent("temp_read_start", t)
+
+    if any(
+        x in low
+        for x in (
+            "закончили с файлом",
+            "закрой временный",
+            "убери временный файл",
+            "больше вопросов нет",
+            "вопросов больше нет",
+        )
     ):
+        return Intent("temp_read_end", t)
+
+    # docs Q&A — but not if user is about to send a file
+    if not _will_send_file(low):
+        docs_scope = any(
+            x in low
+            for x in (
+                "мануал",
+                "мануалах",
+                "файл",
+                "файлах",
+                "документ",
+                "документах",
+                "хранилищ",
+                "инструкц",
+                "pdf",
+            )
+        )
+        docs_ask = any(
+            x in low
+            for x in (
+                "посмотри",
+                "прочитай",
+                "прочти",
+                "найди в",
+                "согласно",
+                "по мануал",
+                "в мануал",
+                "в файл",
+                "в документ",
+                "в хранилищ",
+                "что написано",
+                "как выполнить",
+                "как сделать",
+                "как запустить",
+                "как провести",
+                "aging",
+            )
+        )
+        if docs_scope and docs_ask:
+            return Intent("ask_docs", t)
+        if "мануал" in low and any(
+            x in low for x in ("как", "найди", "посмотри", "где", "что написано", "про ")
+        ):
+            return Intent("ask_docs", t)
+
+    if (
+        any(x in low for x in INGEST_START)
+        or (
+            "сохрани" in low
+            and any(x in low for x in ("файл", "мануал", "документ", "pdf", "их"))
+            and not any(x in low for x in ("что сохрани", "что ты сохрани"))
+        )
+    ) and not any(x in low for x in NO_SAVE):
         return Intent("ingest_start", t)
 
     if low in INGEST_END or low.startswith("готово") or low in {"все", "всё"}:
         return Intent("ingest_end", t)
 
-    # password candidate list BEFORE single-file password
     if any(
         x in low
         for x in (
