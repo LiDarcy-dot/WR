@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import date
 
 from telegram import Update
@@ -17,13 +18,15 @@ from telegram.ext import (
 
 from app.actions.apply import apply_action
 from app.actions.models import ACTION_TYPES
-from app.calendar_view import events_for_day, events_for_month, week_agenda
 from app.config import Settings
 from app.db import connect, init_db
 from app.db import repo
+from app.files import store as file_store
+from app.files.ingest import index_file, save_telegram_bytes
+from app.files.query import DOCS_SYSTEM, build_docs_context, list_files_html
+from app.files.store import category_slug, search_chunks
 from app.intent import classify_intent
 from app.llm.lm_studio import LMStudioClient, WEB_SYSTEM
-from app.websearch.engine import format_research_context, gather_research
 from app.memory.formatters import (
     days_until_next_birthday,
     format_birthday_line,
@@ -53,6 +56,7 @@ from app.ui import (
     week_keyboard,
     welcome_html,
 )
+from app.websearch.engine import format_research_context, gather_research
 
 log = logging.getLogger(__name__)
 
@@ -303,6 +307,109 @@ async def _handle_chat_text(
         )
         return
 
+    # --- file library ---
+    open_session = file_store.get_open_ingest(conn, chat_id)
+
+    if intent.kind == "ingest_start":
+        cat = category_slug(text)
+        sid = file_store.open_ingest_session(
+            conn, chat_id, category=cat, title=text[:200]
+        )
+        conn.commit()
+        await update.effective_message.reply_text(
+            "Ок, жду файлы.\n"
+            f"Папка: <code>{cat}</code>\n"
+            "Можно писать комментарии между файлами.\n"
+            "Когда закончишь — «готово» или «всё».",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    if open_session and intent.kind == "ingest_end":
+        file_store.close_ingest_session(conn, int(open_session["id"]))
+        rows = file_store.list_files(conn, category=open_session["category"], limit=30)
+        conn.commit()
+        await update.effective_message.reply_text(
+            "Приём файлов закрыт.\n" + list_files_html(rows),
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    if open_session and intent.kind not in {
+        "confirm",
+        "cancel",
+        "web_search",
+        "list_birthdays",
+        "ask_docs",
+        "list_files",
+        "file_password",
+        "ingest_start",
+    }:
+        # comment for next file(s)
+        file_store.set_pending_comment(conn, int(open_session["id"]), text)
+        conn.commit()
+        await update.effective_message.reply_text(
+            "Комментарий принял — привяжу к следующему файлу."
+        )
+        return
+
+    if intent.kind == "list_files":
+        rows = file_store.list_files(conn, limit=40)
+        await update.effective_message.reply_text(
+            list_files_html(rows),
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    if intent.kind == "file_password":
+        await _handle_file_password(update, context, text)
+        return
+
+    if intent.kind == "ask_docs":
+        if repo.is_paused(conn):
+            await update.effective_message.reply_text(
+                "Сейчас пауза.", reply_markup=resume_keyboard()
+            )
+            return
+        await update.effective_message.reply_text("Смотрю в файлах…")
+        await update.effective_message.chat.send_action(ChatAction.TYPING)
+        hits = search_chunks(conn, text, limit=14)
+        if not hits:
+            await update.effective_message.reply_text(
+                "В проиндексированных файлах ничего близкого не нашёл.\n"
+                "Проверь «какие файлы» или уточни запрос."
+            )
+            return
+        lm: LMStudioClient = context.application.bot_data["lm"]
+        ctx = build_docs_context(hits)
+        try:
+            answer = await lm.chat_plain(
+                system_prompt=DOCS_SYSTEM,
+                user_text=ctx + f"\n\nВопрос пользователя: {text}",
+                temperature=0.2,
+            )
+        except Exception as exc:  # noqa: BLE001
+            await update.effective_message.reply_text(f"Модель не ответила: {exc}")
+            return
+        if len(answer) > 3900:
+            answer = answer[:3900] + "\n…"
+        # append compact sources
+        sources = []
+        seen = set()
+        for h in hits:
+            key = (h["original_name"], h["page"])
+            if key in seen:
+                continue
+            seen.add(key)
+            sources.append(f"• {h['original_name']} · стр. {h['page'] or '?'}")
+            if len(sources) >= 8:
+                break
+        answer = answer + "\n\nИсточники:\n" + "\n".join(sources)
+        if len(answer) > 3900:
+            answer = answer[:3900] + "\n…"
+        await update.effective_message.reply_text(answer)
+        return
+
     if intent.kind == "web_search":
         if repo.is_paused(conn):
             await update.effective_message.reply_text(
@@ -471,6 +578,143 @@ async def on_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     await update.effective_message.reply_text(
         "Голосом пока только подтверждаю карточки. Напиши текстом."
+    )
+
+
+def _parse_file_password(text: str) -> tuple[int | None, str | None]:
+    """Extract optional file id and password from user text."""
+    m = re.search(
+        r"пароль\s+(?:к\s+|для\s+|от\s+)?"
+        r"(?:файл(?:а|у)?\s+|pdf\s+|id\s+)?"
+        r"(?:#|№)?(\d+)?\s*[:\-–]\s*(.+)$",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if m:
+        fid = int(m.group(1)) if m.group(1) else None
+        pwd = (m.group(2) or "").strip()
+        return fid, pwd or None
+    m2 = re.search(
+        r"пароль\s+(?:к\s+|для\s+|от\s+)?"
+        r"(?:файл(?:а|у)?\s+|pdf\s+|id\s+)?"
+        r"(?:#|№)?(\d+)\s+(.+)$",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if m2:
+        return int(m2.group(1)), (m2.group(2) or "").strip() or None
+    return None, None
+
+
+async def _handle_file_password(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, text: str
+) -> None:
+    settings: Settings = context.application.bot_data["settings"]
+    conn = context.application.bot_data["db"]
+    file_id, password = _parse_file_password(text)
+    if not password:
+        await update.effective_message.reply_text(
+            "Формат: <code>пароль к файлу 12: secret</code>\n"
+            "или для последнего запароленного: <code>пароль: secret</code>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    row = None
+    if file_id is not None:
+        row = file_store.get_file(conn, file_id)
+        if not row:
+            await update.effective_message.reply_text(f"Файл id={file_id} не найден.")
+            return
+    else:
+        row = file_store.latest_needs_password(conn)
+        if not row:
+            await update.effective_message.reply_text(
+                "Нет файлов, ждущих пароль. Укажи id: «пароль к файлу 12: …»."
+            )
+            return
+        file_id = int(row["id"])
+
+    file_store.set_file_password(conn, file_id, password)
+    msg = index_file(conn, settings.assistant_data_dir, file_id)
+    conn.commit()
+    name = row["original_name"] or f"id={file_id}"
+    await update.effective_message.reply_text(f"{name}: {msg}")
+
+
+async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _ingest_media(update, context, kind="document")
+
+
+async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _ingest_media(update, context, kind="photo")
+
+
+async def _ingest_media(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, *, kind: str
+) -> None:
+    settings: Settings = context.application.bot_data["settings"]
+    if not _is_owner(update, settings):
+        return
+    if not update.effective_message or not update.effective_chat:
+        return
+
+    conn = context.application.bot_data["db"]
+    chat_id = update.effective_chat.id
+    session = file_store.get_open_ingest(conn, chat_id)
+    if not session:
+        await update.effective_message.reply_text(
+            "Сейчас не принимаю файлы в хранилище.\n"
+            "Скажи сначала: «сейчас скину файлы, сохрани» — и пришли снова."
+        )
+        return
+
+    msg = update.effective_message
+    caption = (msg.caption or "").strip() or None
+    comment = file_store.take_pending_comment(conn, int(session["id"]))
+    if caption:
+        comment = f"{comment}\n{caption}".strip() if comment else caption
+
+    try:
+        if kind == "document" and msg.document:
+            tg_file = await msg.document.get_file()
+            original = msg.document.file_name or f"doc_{msg.document.file_unique_id}"
+            mime = msg.document.mime_type
+            raw = bytes(await tg_file.download_as_bytearray())
+        elif kind == "photo" and msg.photo:
+            photo = msg.photo[-1]
+            tg_file = await photo.get_file()
+            original = f"photo_{photo.file_unique_id}.jpg"
+            mime = "image/jpeg"
+            raw = bytes(await tg_file.download_as_bytearray())
+        else:
+            await update.effective_message.reply_text("Не понял вложение.")
+            return
+    except Exception as exc:  # noqa: BLE001
+        log.exception("telegram download failed")
+        await update.effective_message.reply_text(f"Не скачал файл: {exc}")
+        return
+
+    if len(raw) > 45 * 1024 * 1024:
+        await update.effective_message.reply_text("Слишком большой файл (>45 МБ).")
+        return
+
+    file_id, save_msg = await save_telegram_bytes(
+        conn=conn,
+        data_root=settings.assistant_data_dir,
+        raw=raw,
+        original_name=original,
+        mime=mime,
+        category=session["category"] or "general",
+        comment=comment,
+        session_id=int(session["id"]),
+    )
+    index_msg = index_file(conn, settings.assistant_data_dir, file_id)
+    conn.commit()
+
+    note = f"\nКомментарий: {comment}" if comment else ""
+    await update.effective_message.reply_text(
+        f"{save_msg}\n{index_msg}{note}\n"
+        "Можно ещё файл или комментарий. «готово» — закрыть приём."
     )
 
 
@@ -754,6 +998,8 @@ def create_app(settings: Settings) -> Application:
     application.add_handler(CallbackQueryHandler(on_callback))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
     application.add_handler(MessageHandler(filters.VOICE, on_voice))
+    application.add_handler(MessageHandler(filters.Document.ALL, on_document))
+    application.add_handler(MessageHandler(filters.PHOTO, on_photo))
     return application
 
 

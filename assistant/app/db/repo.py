@@ -587,6 +587,9 @@ def bump_recurring_next(
     )
 
 
+from app.files.store import ensure_files_schema
+
+
 def ensure_runtime_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
@@ -599,6 +602,7 @@ def ensure_runtime_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    ensure_files_schema(conn)
     # Refresh default persona so old installs learn about the DB
     conn.execute(
         """
@@ -609,7 +613,9 @@ def ensure_runtime_schema(conn: sqlite3.Connection) -> None:
         (
             """Ты локальный личный ассистент на ПК пользователя.
 Отвечай по-русски, кратко и по делу.
-У тебя ЕСТЬ локальная база SQLite: люди, дни рождения, напоминания, ЖКХ.
+У тебя ЕСТЬ локальная база SQLite: люди, дни рождения, напоминания, ЖКХ, файлы.
+Файлы в хранилище сохраняются только по явной просьбе пользователя (сессия приёма).
+Вопросы по мануалам/файлам пользователь задаёт отдельно — программа сама подтянет фрагменты.
 Факты из блока «ФАКТЫ ИЗ ЛОКАЛЬНОЙ БД» — достоверны: опирайся на них.
 Не говори, что у тебя нет памяти или базы — она есть.
 Пользователь пишет свободно, с ошибками — понимай смысл.
