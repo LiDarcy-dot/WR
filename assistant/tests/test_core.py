@@ -144,3 +144,48 @@ def test_strip_think_then_json() -> None:
     reply = parse_model_content(raw)
     assert reply.mode == "chat"
     assert reply.message == "Привет"
+
+
+def test_intent_confirm_and_birthdays() -> None:
+    from app.intent import classify_intent
+
+    assert classify_intent("Да").kind == "confirm"
+    assert classify_intent("+").kind == "confirm"
+    assert classify_intent("ок").kind == "confirm"
+    assert classify_intent("нет").kind == "cancel"
+    assert (
+        classify_intent(
+            "напиши все дни рождения в порядке от ближайшего к дальнему"
+        ).kind
+        == "list_birthdays"
+    )
+    assert (
+        classify_intent("покажи что ты записал за сегодня в базы данных").kind
+        == "recent_writes"
+    )
+
+
+def test_birthday_order_and_memory(tmp_path: Path) -> None:
+    from datetime import date
+
+    from app.memory.formatters import days_until_next_birthday
+
+    today = date(2026, 8, 27)
+    assert days_until_next_birthday(8, 28, today) == 1
+    assert days_until_next_birthday(5, 25, today) > 1
+
+    db = tmp_path / "m.sqlite3"
+    init_db(db)
+    conn = connect(db)
+    repo.upsert_person_with_birthday_and_attrs(
+        conn, "Папа", relation="папа", month=5, day=25, year=1970
+    )
+    repo.upsert_person_with_birthday_and_attrs(
+        conn, "Серга", relation="друг", month=8, day=28, year=1995
+    )
+    conn.commit()
+    block = repo.build_memory_block(conn, "Europe/Moscow")
+    assert "Папа" in block
+    assert "Серга" in block
+    assert "Дней рождения: 2" in block
+

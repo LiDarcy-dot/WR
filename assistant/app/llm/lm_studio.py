@@ -10,23 +10,26 @@ from app.actions.models import AssistantReply
 
 
 SYSTEM_JSON_HINT = """
-Когда пользователь хочет СОХРАНИТЬ данные, ответь ТОЛЬКО JSON без markdown-ограждений:
+Когда пользователь хочет СОХРАНИТЬ данные, ответь ТОЛЬКО JSON без markdown:
 {
   "mode": "propose_action",
   "message": "краткое пояснение по-русски",
   "action_type": "upsert_person|create_reminder_one_shot|create_reminder_recurring|create_entity_type",
   "payload": { ... }
 }
+Не пиши «подтверди» обычным текстом — только propose_action JSON.
+Программа сама покажет кнопки; пользователь подтвердит Да / + / голосом / кнопкой.
 
-Для обычного разговора:
+Для обычного разговора и вопросов по УЖЕ сохранённым данным (смотри блок ФАКТЫ ИЗ ЛОКАЛЬНОЙ БД):
 {
   "mode": "chat",
-  "message": "ответ по-русски",
+  "message": "ответ по-русски с опорой на факты из БД",
   "action_type": null,
   "payload": {}
 }
 
-Не пиши рассуждения вне JSON. Не оборачивай JSON в ```.
+Не утверждай, что у тебя нет базы или памяти.
+Не оборачивай JSON в ```.
 Примеры payload:
 - upsert_person: display_name, relation?, birthday_day?, birthday_month?, birthday_year?, attributes:[{key,label,value,value_type}]
 - create_reminder_one_shot: title, fire_at (ISO), body?

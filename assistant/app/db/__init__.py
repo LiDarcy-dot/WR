@@ -50,3 +50,6 @@ def init_db(db_path: Path) -> None:
                 (key, value),
             )
         conn.commit()
+        from app.db import repo as repo_mod
+
+        repo_mod.ensure_runtime_schema(conn)

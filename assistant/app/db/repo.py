@@ -93,27 +93,70 @@ def upsert_person_with_birthday_and_attrs(
     year: int | None = None,
     attributes: list[dict[str, str]] | None = None,
 ) -> int:
-    cur = conn.execute(
+    existing = conn.execute(
         """
-        INSERT INTO people (display_name, aliases, relation)
-        VALUES (?, ?, ?)
+        SELECT id FROM people
+        WHERE lower(display_name) = lower(?)
+           OR (relation IS NOT NULL AND lower(relation) = lower(?) AND ? != '')
+        ORDER BY id DESC LIMIT 1
         """,
-        (display_name, aliases, relation),
-    )
-    person_id = int(cur.lastrowid)
-    if month is not None and day is not None:
+        (display_name, relation or "", relation or ""),
+    ).fetchone()
+    if existing:
+        person_id = int(existing["id"])
         conn.execute(
             """
-            INSERT INTO birthdays (person_id, month, day, year)
-            VALUES (?, ?, ?, ?)
+            UPDATE people
+            SET display_name = ?,
+                aliases = COALESCE(?, aliases),
+                relation = COALESCE(?, relation),
+                updated_at = datetime('now')
+            WHERE id = ?
             """,
-            (person_id, month, day, year),
+            (display_name, aliases, relation, person_id),
         )
+    else:
+        cur = conn.execute(
+            """
+            INSERT INTO people (display_name, aliases, relation)
+            VALUES (?, ?, ?)
+            """,
+            (display_name, aliases, relation),
+        )
+        person_id = int(cur.lastrowid)
+
+    if month is not None and day is not None:
+        row = conn.execute(
+            "SELECT id FROM birthdays WHERE person_id = ?",
+            (person_id,),
+        ).fetchone()
+        if row:
+            conn.execute(
+                """
+                UPDATE birthdays
+                SET month = ?, day = ?, year = ?, updated_at = datetime('now'), active = 1
+                WHERE person_id = ?
+                """,
+                (month, day, year, person_id),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO birthdays (person_id, month, day, year)
+                VALUES (?, ?, ?, ?)
+                """,
+                (person_id, month, day, year),
+            )
     for attr in attributes or []:
         conn.execute(
             """
             INSERT INTO person_attributes (person_id, key, label, value, value_type)
             VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(person_id, key) DO UPDATE SET
+                label = excluded.label,
+                value = excluded.value,
+                value_type = excluded.value_type,
+                updated_at = datetime('now')
             """,
             (
                 person_id,
@@ -213,3 +256,218 @@ def create_one_shot_reminder(
         (title, body, fire_at, source_type, source_id),
     )
     return int(cur.lastrowid)
+
+
+def get_latest_pending_action(
+    conn: sqlite3.Connection, chat_id: int
+) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        SELECT * FROM pending_actions
+        WHERE chat_id = ? AND status = 'pending'
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (chat_id,),
+    ).fetchone()
+
+
+def list_birthdays(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return list(
+        conn.execute(
+            """
+            SELECT p.id AS person_id, p.display_name, p.relation,
+                   b.month, b.day, b.year, b.active
+            FROM birthdays b
+            JOIN people p ON p.id = b.person_id
+            WHERE b.active = 1
+            ORDER BY b.month, b.day, p.display_name
+            """
+        ).fetchall()
+    )
+
+
+def list_people(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return list(
+        conn.execute(
+            """
+            SELECT id, display_name, relation, created_at
+            FROM people
+            ORDER BY id DESC
+            """
+        ).fetchall()
+    )
+
+
+def recent_writes_today(
+    conn: sqlite3.Connection, timezone_offset_hours: int = 3
+) -> dict[str, list[sqlite3.Row]]:
+    """SQLite stores UTC-ish datetime('now'); compare by local date string YYYY-MM-DD via modifier."""
+    # Use 'localtime' if available; also match date prefix on created_at
+    people = list(
+        conn.execute(
+            """
+            SELECT id, display_name, relation, created_at
+            FROM people
+            WHERE date(created_at, 'localtime') = date('now', 'localtime')
+               OR date(created_at) = date('now', 'localtime')
+               OR created_at LIKE date('now', 'localtime') || '%'
+            ORDER BY id DESC
+            """
+        ).fetchall()
+    )
+    birthdays = list(
+        conn.execute(
+            """
+            SELECT p.display_name, b.day, b.month, b.year, b.created_at
+            FROM birthdays b
+            JOIN people p ON p.id = b.person_id
+            WHERE date(b.created_at, 'localtime') = date('now', 'localtime')
+               OR date(b.created_at) = date('now', 'localtime')
+               OR b.created_at LIKE date('now', 'localtime') || '%'
+            ORDER BY b.id DESC
+            """
+        ).fetchall()
+    )
+    reminders = list(
+        conn.execute(
+            """
+            SELECT id, title, fire_at AS when_at, created_at, 'one_shot' AS kind
+            FROM reminders_one_shot
+            WHERE date(created_at, 'localtime') = date('now', 'localtime')
+               OR created_at LIKE date('now', 'localtime') || '%'
+            UNION ALL
+            SELECT id, title, next_fire_at AS when_at, created_at, 'recurring' AS kind
+            FROM reminders_recurring
+            WHERE date(created_at, 'localtime') = date('now', 'localtime')
+               OR created_at LIKE date('now', 'localtime') || '%'
+            ORDER BY created_at DESC
+            """
+        ).fetchall()
+    )
+    applied = list(
+        conn.execute(
+            """
+            SELECT id, action_type, payload_json, resolved_at, created_at
+            FROM pending_actions
+            WHERE status = 'applied'
+              AND (
+                date(resolved_at, 'localtime') = date('now', 'localtime')
+                OR resolved_at LIKE date('now', 'localtime') || '%'
+              )
+            ORDER BY id DESC
+            """
+        ).fetchall()
+    )
+    return {
+        "people": people,
+        "birthdays": birthdays,
+        "reminders": reminders,
+        "applied_actions": applied,
+    }
+
+
+def add_chat_message(
+    conn: sqlite3.Connection, chat_id: int, role: str, content: str
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO chat_messages (chat_id, role, content)
+        VALUES (?, ?, ?)
+        """,
+        (chat_id, role, content[:8000]),
+    )
+
+
+def get_chat_history(
+    conn: sqlite3.Connection, chat_id: int, limit: int = 12
+) -> list[dict[str, str]]:
+    rows = conn.execute(
+        """
+        SELECT role, content FROM chat_messages
+        WHERE chat_id = ?
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (chat_id, limit),
+    ).fetchall()
+    return [{"role": r["role"], "content": r["content"]} for r in reversed(rows)]
+
+
+def build_memory_block(conn: sqlite3.Connection, timezone: str = "Europe/Moscow") -> str:
+    from app.memory.formatters import (
+        format_birthday_line,
+        today_in_tz,
+    )
+
+    today = today_in_tz(timezone)
+    bdays = list_birthdays(conn)
+    people = list_people(conn)
+    lines = [
+        "ФАКТЫ ИЗ ЛОКАЛЬНОЙ БД (это правда, не выдумывай иное):",
+        f"Сегодня: {today.isoformat()}",
+        f"Людей в базе: {len(people)}",
+        f"Дней рождения: {len(bdays)}",
+    ]
+    if bdays:
+        ordered = sorted(
+            bdays,
+            key=lambda r: __import__(
+                "app.memory.formatters", fromlist=["days_until_next_birthday"]
+            ).days_until_next_birthday(r["month"], r["day"], today),
+        )
+        lines.append("Дни рождения (ближайшие первыми):")
+        for r in ordered[:30]:
+            lines.append(
+                format_birthday_line(
+                    r["display_name"],
+                    r["month"],
+                    r["day"],
+                    r["year"],
+                    r["relation"],
+                    today,
+                )
+            )
+    else:
+        lines.append("Дней рождения пока нет.")
+    if people:
+        lines.append("Люди:")
+        for p in people[:40]:
+            rel = f" ({p['relation']})" if p["relation"] else ""
+            lines.append(f"• id={p['id']} {p['display_name']}{rel}")
+    return "\n".join(lines)
+
+
+def ensure_runtime_schema(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS chat_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        """
+    )
+    # Refresh default persona so old installs learn about the DB
+    conn.execute(
+        """
+        UPDATE persona_presets
+        SET system_prompt = ?, updated_at = datetime('now')
+        WHERE name = 'default'
+        """,
+        (
+            """Ты локальный личный ассистент на ПК пользователя.
+Отвечай по-русски, кратко и по делу.
+У тебя ЕСТЬ локальная база SQLite: люди, дни рождения, напоминания, ЖКХ.
+Факты из блока «ФАКТЫ ИЗ ЛОКАЛЬНОЙ БД» — достоверны: опирайся на них.
+Не говори, что у тебя нет памяти или базы — она есть.
+Пользователь пишет свободно, с ошибками — понимай смысл.
+Чтобы СОХРАНИТЬ новые данные — верни JSON propose_action (не обычный текст «подтверди»).
+Подтверждение пользователь даст кнопкой, «Да», «+» или голосом — это делает программа.
+Не выдумывай факты, которых нет в БД и которые пользователь не сообщал.
+""",
+        ),
+    )
+    conn.commit()
