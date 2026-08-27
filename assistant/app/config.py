@@ -27,6 +27,7 @@ class Settings(BaseSettings):
 
     assistant_data_dir: Path = Field(alias="ASSISTANT_DATA_DIR")
     timezone: str = Field(default="Europe/Moscow", alias="TIMEZONE")
+    web_port: int = Field(default=8765, alias="WEB_PORT")
 
     @property
     def db_path(self) -> Path:

@@ -20,7 +20,10 @@ def remove_reply_keyboard() -> ReplyKeyboardRemove:
 def home_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton("Календарь", callback_data="cal:today")],
+            [
+                InlineKeyboardButton("Календарь", callback_data="cal:today"),
+                InlineKeyboardButton("Скоро", callback_data="cal:week"),
+            ],
             [
                 InlineKeyboardButton("Люди", callback_data="menu:people"),
                 InlineKeyboardButton("Напомнить", callback_data="menu:reminders"),
@@ -48,9 +51,10 @@ def confirm_keyboard(action_id: int) -> InlineKeyboardMarkup:
 def welcome_html() -> str:
     return (
         "Привет.\n\n"
-        "Пиши как удобно — запомню после твоего подтверждения "
-        "(кнопка, «да» или «+»).\n\n"
-        "Открыть календарь и разделы — кнопки ниже, или /menu"
+        "Пиши как удобно — запишу после подтверждения "
+        "(кнопка, «да» или «+»).\n"
+        "Календарь и «скоро» — кнопки ниже.\n"
+        "Панель на ПК: http://127.0.0.1:8765"
     )
 
 
@@ -218,7 +222,12 @@ def calendar_keyboard(
             InlineKeyboardButton("›", callback_data=f"cal:m:{ny:04d}-{nm:02d}"),
         ]
     )
-    rows.append([InlineKeyboardButton("меню", callback_data="menu:home")])
+    rows.append(
+        [
+            InlineKeyboardButton("скоро", callback_data="cal:week"),
+            InlineKeyboardButton("меню", callback_data="menu:home"),
+        ]
+    )
     return InlineKeyboardMarkup(rows)
 
 
@@ -239,15 +248,83 @@ def day_detail_html(day: date, events: list[DayEvent]) -> str:
     return "\n".join(lines)
 
 
-def day_keyboard(day: date) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
+def day_keyboard(day: date, events: list[DayEvent] | None = None) -> InlineKeyboardMarkup:
+    iso = day.isoformat()
+    rows: list[list[InlineKeyboardButton]] = [
         [
-            [
-                InlineKeyboardButton(
-                    "к месяцу",
-                    callback_data=f"cal:m:{day.year:04d}-{day.month:02d}",
-                )
-            ],
-            [InlineKeyboardButton("меню", callback_data="menu:home")],
+            InlineKeyboardButton("добавить", callback_data=f"cal:add:{iso}"),
+            InlineKeyboardButton("отложить", callback_data=f"cal:snooze:{iso}"),
+        ],
+        [
+            InlineKeyboardButton(
+                "к месяцу",
+                callback_data=f"cal:m:{day.year:04d}-{day.month:02d}",
+            ),
+            InlineKeyboardButton("меню", callback_data="menu:home"),
+        ],
+    ]
+    return InlineKeyboardMarkup(rows)
+
+
+def week_html(agenda: list[tuple[date, list[DayEvent]]]) -> str:
+    lines = ["<b>Скоро · 7 дней</b>"]
+    for d, events in agenda:
+        label = d.strftime("%d.%m")
+        if not events:
+            lines.append(f"{label} —")
+            continue
+        titles = ", ".join(esc(e.title) for e in events[:3])
+        more = f" +{len(events) - 3}" if len(events) > 3 else ""
+        lines.append(f"{label} · {titles}{more}")
+    return "\n".join(lines)
+
+
+def week_keyboard(agenda: list[tuple[date, list[DayEvent]]]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    row: list[InlineKeyboardButton] = []
+    for d, events in agenda:
+        mark = "·" if events else ""
+        row.append(
+            InlineKeyboardButton(
+                f"{d.day}{mark}",
+                callback_data=f"cal:d:{d.isoformat()}",
+            )
+        )
+        if len(row) == 4:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append(
+        [
+            InlineKeyboardButton("календарь", callback_data="cal:today"),
+            InlineKeyboardButton("меню", callback_data="menu:home"),
         ]
     )
+    return InlineKeyboardMarkup(rows)
+
+
+def snooze_pick_keyboard(day: date, events: list[DayEvent]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for ev in events:
+        if ev.kind not in ("reminder", "recurring") or not ev.reminder_id:
+            continue
+        kind = ev.reminder_kind or "one_shot"
+        rid = ev.reminder_id
+        title = (ev.title[:18] + "…") if len(ev.title) > 18 else ev.title
+        rows.append(
+            [InlineKeyboardButton(title, callback_data="cal:noop")]
+        )
+        rows.append(
+            [
+                InlineKeyboardButton("+1ч", callback_data=f"rem:s:{kind}:{rid}:60"),
+                InlineKeyboardButton("+3ч", callback_data=f"rem:s:{kind}:{rid}:180"),
+                InlineKeyboardButton("завтра", callback_data=f"rem:s:{kind}:{rid}:1440"),
+            ]
+        )
+    if not rows:
+        rows.append([InlineKeyboardButton("нечего откладывать", callback_data="cal:noop")])
+    rows.append(
+        [InlineKeyboardButton("назад", callback_data=f"cal:d:{day.isoformat()}")]
+    )
+    return InlineKeyboardMarkup(rows)

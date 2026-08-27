@@ -183,6 +183,25 @@ def test_calendar_month_marks(tmp_path: Path) -> None:
     assert any(25 in week for week in grid)
 
 
+def test_week_agenda(tmp_path: Path) -> None:
+    from datetime import date
+
+    from app.calendar_view import week_agenda
+
+    db = tmp_path / "w.sqlite3"
+    init_db(db)
+    conn = connect(db)
+    repo.upsert_person_with_birthday_and_attrs(
+        conn, "Папа", relation="папа", month=5, day=25, year=1970
+    )
+    conn.commit()
+    start = date(2026, 5, 22)
+    agenda = week_agenda(conn, start, "Europe/Moscow", 7)
+    assert len(agenda) == 7
+    day25 = next(ev for d, ev in agenda if d.day == 25)
+    assert day25 and day25[0].kind == "birthday"
+
+
 def test_birthday_order_and_memory(tmp_path: Path) -> None:
     from datetime import date
 

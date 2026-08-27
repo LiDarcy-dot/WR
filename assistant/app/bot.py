@@ -17,7 +17,7 @@ from telegram.ext import (
 
 from app.actions.apply import apply_action
 from app.actions.models import ACTION_TYPES
-from app.calendar_view import events_for_day, events_for_month
+from app.calendar_view import events_for_day, events_for_month, week_agenda
 from app.config import Settings
 from app.db import connect, init_db
 from app.db import repo
@@ -28,6 +28,7 @@ from app.memory.formatters import (
     format_birthday_line,
     today_in_tz,
 )
+from app.scheduler import process_due_reminders
 from app.storage_layout import ensure_data_layout
 from app.ui import (
     calendar_keyboard,
@@ -40,7 +41,10 @@ from app.ui import (
     menu_section_html,
     remove_reply_keyboard,
     section_keyboard,
+    snooze_pick_keyboard,
     status_html,
+    week_html,
+    week_keyboard,
     welcome_html,
 )
 
@@ -292,8 +296,34 @@ async def _handle_chat_text(
     if "календар" in low:
         await cmd_calendar(update, context)
         return
+    if low in {"скоро", "что скоро", "на неделе", "эта неделя"} or "что скоро" in low:
+        await cmd_soon(update, context)
+        return
 
     edit_id = context.user_data.pop("edit_action_id", None)
+    add_date = context.user_data.get("add_on_date")
+    if add_date is not None and edit_id is None:
+        context.user_data.pop("add_on_date", None)
+        # текст = название напоминания на выбранный день
+        fire_at = f"{add_date}T10:00:00"
+        action_id = repo.create_pending_action(
+            conn,
+            chat_id,
+            "create_reminder_one_shot",
+            {"title": text, "fire_at": fire_at, "body": None},
+        )
+        conn.commit()
+        card = format_action_card_html(
+            "create_reminder_one_shot",
+            {"title": text, "fire_at": fire_at},
+        )
+        await update.effective_message.reply_text(
+            f"{card}\n\nСохранить? Кнопка, «да» или «+».",
+            parse_mode=ParseMode.HTML,
+            reply_markup=confirm_keyboard(action_id),
+        )
+        return
+
     if edit_id is not None:
         old = repo.get_pending_action(conn, edit_id)
         if not old:
@@ -399,6 +429,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     await query.answer()
 
+    if data.startswith("rem:"):
+        await _on_reminder_action(query, context, data)
+        return
+
     if data.startswith("cal:"):
         await _on_calendar(query, context, data)
         return
@@ -485,6 +519,42 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await query.edit_message_text(f"Готово. {result}")
 
 
+async def _on_reminder_action(
+    query, context: ContextTypes.DEFAULT_TYPE, data: str
+) -> None:
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    settings: Settings = context.application.bot_data["settings"]
+    conn = context.application.bot_data["db"]
+    parts = data.split(":")
+    # rem:s:one_shot:12:60  or rem:d:one_shot:12
+    if len(parts) < 4:
+        return
+    op, kind, rid_s = parts[1], parts[2], parts[3]
+    rid = int(rid_s)
+    tz = ZoneInfo(settings.timezone)
+    now = datetime.now(tz=tz)
+
+    if op == "d":
+        if kind == "one_shot":
+            repo.mark_one_shot_done(conn, rid)
+            conn.commit()
+        await query.edit_message_text("готово")
+        return
+
+    if op == "s" and len(parts) >= 5:
+        minutes = int(parts[4])
+        until = now + timedelta(minutes=minutes)
+        if kind == "one_shot":
+            repo.snooze_one_shot(conn, rid, until.isoformat())
+            conn.commit()
+        elif kind == "recurring":
+            repo.bump_recurring_next(conn, rid, until.isoformat())
+            conn.commit()
+        await query.edit_message_text(f"отложено до {until.strftime('%d.%m %H:%M')}")
+
+
 async def _on_calendar(query, context: ContextTypes.DEFAULT_TYPE, data: str) -> None:
     settings: Settings = context.application.bot_data["settings"]
     conn = context.application.bot_data["db"]
@@ -495,7 +565,15 @@ async def _on_calendar(query, context: ContextTypes.DEFAULT_TYPE, data: str) -> 
         await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
         return
 
-    # cal:m:YYYY-MM
+    if data == "cal:week":
+        agenda = week_agenda(conn, today, settings.timezone, 7)
+        await query.edit_message_text(
+            week_html(agenda),
+            parse_mode=ParseMode.HTML,
+            reply_markup=week_keyboard(agenda),
+        )
+        return
+
     if data.startswith("cal:m:"):
         raw = data[6:]
         year_s, month_s = raw.split("-", 1)
@@ -504,14 +582,30 @@ async def _on_calendar(query, context: ContextTypes.DEFAULT_TYPE, data: str) -> 
         await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
         return
 
-    # cal:d:YYYY-MM-DD
+    if data.startswith("cal:add:"):
+        iso = data[8:]
+        context.user_data["add_on_date"] = iso
+        await query.edit_message_text(
+            f"Что напомнить на {iso}?\nНапиши одним сообщением."
+        )
+        return
+
+    if data.startswith("cal:snooze:"):
+        day = date.fromisoformat(data[11:])
+        events = events_for_day(conn, day, settings.timezone)
+        await query.edit_message_text(
+            f"Отложить · {day.strftime('%d.%m.%Y')}",
+            reply_markup=snooze_pick_keyboard(day, events),
+        )
+        return
+
     if data.startswith("cal:d:"):
         day = date.fromisoformat(data[6:])
         events = events_for_day(conn, day, settings.timezone)
         await query.edit_message_text(
             day_detail_html(day, events),
             parse_mode=ParseMode.HTML,
-            reply_markup=day_keyboard(day),
+            reply_markup=day_keyboard(day, events),
         )
 
 
@@ -522,7 +616,12 @@ def create_app(settings: Settings) -> Application:
     repo.ensure_runtime_schema(conn)
     lm = LMStudioClient(settings.lm_studio_base_url, settings.lm_studio_model)
 
-    application = Application.builder().token(settings.telegram_bot_token).build()
+    application = (
+        Application.builder()
+        .token(settings.telegram_bot_token)
+        .post_init(_post_init)
+        .build()
+    )
     application.bot_data["settings"] = settings
     application.bot_data["db"] = conn
     application.bot_data["lm"] = lm
@@ -530,6 +629,7 @@ def create_app(settings: Settings) -> Application:
     application.add_handler(CommandHandler("start", cmd_start))
     application.add_handler(CommandHandler("menu", cmd_menu))
     application.add_handler(CommandHandler("calendar", cmd_calendar))
+    application.add_handler(CommandHandler("soon", cmd_soon))
     application.add_handler(CommandHandler("status", cmd_status))
     application.add_handler(CommandHandler("pause", cmd_pause))
     application.add_handler(CommandHandler("resume", cmd_resume))
@@ -539,14 +639,49 @@ def create_app(settings: Settings) -> Application:
     return application
 
 
+async def _post_init(application: Application) -> None:
+    if application.job_queue:
+        application.job_queue.run_repeating(
+            process_due_reminders, interval=30, first=5, name="due_reminders"
+        )
+
+
+async def cmd_soon(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    settings: Settings = context.application.bot_data["settings"]
+    if not _is_owner(update, settings):
+        return
+    conn = context.application.bot_data["db"]
+    today = today_in_tz(settings.timezone)
+    agenda = week_agenda(conn, today, settings.timezone, 7)
+    await update.effective_message.reply_text(
+        week_html(agenda),
+        parse_mode=ParseMode.HTML,
+        reply_markup=week_keyboard(agenda),
+    )
+
+
 def run_bot(settings: Settings | None = None) -> None:
+    import threading
+
     from app.config import load_settings
+    from app.web.panel import run_web
 
     settings = settings or load_settings()
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+
+    web_port = getattr(settings, "web_port", 8765)
+    t = threading.Thread(
+        target=run_web,
+        kwargs={"settings": settings, "host": "127.0.0.1", "port": web_port},
+        daemon=True,
+        name="wr-web",
+    )
+    t.start()
+    log.info("Web panel http://127.0.0.1:%s", web_port)
+
     app = create_app(settings)
     log.info("Bot starting; data dir=%s", settings.assistant_data_dir)
     app.run_polling(allowed_updates=Update.ALL_TYPES)

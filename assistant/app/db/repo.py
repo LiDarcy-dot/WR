@@ -438,6 +438,104 @@ def build_memory_block(conn: sqlite3.Connection, timezone: str = "Europe/Moscow"
     return "\n".join(lines)
 
 
+def snooze_one_shot(
+    conn: sqlite3.Connection, reminder_id: int, until_iso: str
+) -> None:
+    conn.execute(
+        """
+        UPDATE reminders_one_shot
+        SET status = 'snoozed',
+            snooze_until = ?,
+            updated_at = datetime('now')
+        WHERE id = ?
+        """,
+        (until_iso, reminder_id),
+    )
+    conn.execute(
+        """
+        INSERT INTO reminder_events (
+            reminder_kind, reminder_id, planned_at, user_action, action_at, snooze_minutes
+        ) VALUES ('one_shot', ?, ?, 'snoozed', datetime('now'), NULL)
+        """,
+        (reminder_id, until_iso),
+    )
+
+
+def mark_one_shot_done(conn: sqlite3.Connection, reminder_id: int) -> None:
+    conn.execute(
+        """
+        UPDATE reminders_one_shot
+        SET status = 'done', updated_at = datetime('now')
+        WHERE id = ?
+        """,
+        (reminder_id,),
+    )
+    conn.execute(
+        """
+        INSERT INTO reminder_events (
+            reminder_kind, reminder_id, planned_at, user_action, action_at
+        ) VALUES ('one_shot', ?, datetime('now'), 'done', datetime('now'))
+        """,
+        (reminder_id,),
+    )
+
+
+def due_one_shots(conn: sqlite3.Connection, now_iso: str) -> list[sqlite3.Row]:
+    return list(
+        conn.execute(
+            """
+            SELECT * FROM reminders_one_shot
+            WHERE
+              (status = 'scheduled' AND fire_at <= ?)
+              OR (status = 'snoozed' AND snooze_until IS NOT NULL AND snooze_until <= ?)
+            ORDER BY id
+            LIMIT 20
+            """,
+            (now_iso, now_iso),
+        ).fetchall()
+    )
+
+
+def due_recurring(conn: sqlite3.Connection, now_iso: str) -> list[sqlite3.Row]:
+    return list(
+        conn.execute(
+            """
+            SELECT * FROM reminders_recurring
+            WHERE status = 'active'
+              AND next_fire_at IS NOT NULL
+              AND next_fire_at <= ?
+            ORDER BY id
+            LIMIT 20
+            """,
+            (now_iso,),
+        ).fetchall()
+    )
+
+
+def mark_one_shot_sent(conn: sqlite3.Connection, reminder_id: int) -> None:
+    conn.execute(
+        """
+        UPDATE reminders_one_shot
+        SET status = 'sent', updated_at = datetime('now')
+        WHERE id = ?
+        """,
+        (reminder_id,),
+    )
+
+
+def bump_recurring_next(
+    conn: sqlite3.Connection, reminder_id: int, next_iso: str
+) -> None:
+    conn.execute(
+        """
+        UPDATE reminders_recurring
+        SET next_fire_at = ?, updated_at = datetime('now')
+        WHERE id = ?
+        """,
+        (next_iso, reminder_id),
+    )
+
+
 def ensure_runtime_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         """

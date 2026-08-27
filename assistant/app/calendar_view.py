@@ -18,6 +18,8 @@ class DayEvent:
     kind: str  # birthday | reminder | recurring
     title: str
     detail: str = ""
+    reminder_id: int | None = None
+    reminder_kind: str | None = None  # one_shot | recurring
 
 
 def _parse_fire_date(value: str | None) -> date | None:
@@ -59,18 +61,22 @@ def events_for_month(
 
     for row in conn.execute(
         """
-        SELECT title, body, fire_at, status
+        SELECT id, title, body, fire_at, status, snooze_until
         FROM reminders_one_shot
         WHERE status IN ('scheduled', 'snoozed', 'sent')
         """
     ).fetchall():
         d = _parse_fire_date(row["fire_at"])
+        if row["status"] == "snoozed":
+            d = _parse_fire_date(row["snooze_until"]) or d
         if d and d.year == year and d.month == month:
             out[d.day].append(
                 DayEvent(
                     "reminder",
                     row["title"],
                     (row["body"] or "")[:120],
+                    reminder_id=int(row["id"]),
+                    reminder_kind="one_shot",
                 )
             )
 
@@ -82,7 +88,7 @@ def events_for_month(
 
     for row in conn.execute(
         """
-        SELECT title, body, rrule, dtstart, time_of_day, timezone, status
+        SELECT id, title, body, rrule, dtstart, time_of_day, timezone, status
         FROM reminders_recurring
         WHERE status = 'active'
         """
@@ -102,12 +108,33 @@ def events_for_month(
                         "recurring",
                         row["title"],
                         f"{row['time_of_day'] or ''} {(row['body'] or '')}".strip()[:120],
+                        reminder_id=int(row["id"]),
+                        reminder_kind="recurring",
                     )
                 )
         except Exception:
             continue
 
     return dict(out)
+
+
+def week_agenda(
+    conn: sqlite3.Connection,
+    start: date,
+    timezone: str = "Europe/Moscow",
+    days: int = 7,
+) -> list[tuple[date, list[DayEvent]]]:
+    result: list[tuple[date, list[DayEvent]]] = []
+    # cache months touched
+    cache: dict[tuple[int, int], dict[int, list[DayEvent]]] = {}
+    for i in range(days):
+        d = start + timedelta(days=i)
+        key = (d.year, d.month)
+        if key not in cache:
+            cache[key] = events_for_month(conn, d.year, d.month, timezone)
+        result.append((d, cache[key].get(d.day, [])))
+    return result
+
 
 
 def events_for_day(
