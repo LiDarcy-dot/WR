@@ -299,6 +299,57 @@ def list_people(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     )
 
 
+def get_person(conn: sqlite3.Connection, person_id: int) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT * FROM people WHERE id = ?",
+        (person_id,),
+    ).fetchone()
+
+
+def get_birthday_for_person(
+    conn: sqlite3.Connection, person_id: int
+) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT * FROM birthdays WHERE person_id = ? AND active = 1",
+        (person_id,),
+    ).fetchone()
+
+
+def list_person_attributes(
+    conn: sqlite3.Connection, person_id: int
+) -> list[sqlite3.Row]:
+    return list(
+        conn.execute(
+            """
+            SELECT key, label, value, value_type
+            FROM person_attributes
+            WHERE person_id = ?
+            ORDER BY id
+            """,
+            (person_id,),
+        ).fetchall()
+    )
+
+
+def list_people_with_birthdays(conn: sqlite3.Connection) -> list[dict]:
+    """Unified rows for UI: people left-joined with birthday."""
+    rows = conn.execute(
+        """
+        SELECT
+            p.id AS person_id,
+            p.display_name,
+            p.relation,
+            b.month,
+            b.day,
+            b.year
+        FROM people p
+        LEFT JOIN birthdays b ON b.person_id = p.id AND b.active = 1
+        ORDER BY p.display_name COLLATE NOCASE
+        """
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def recent_writes_today(
     conn: sqlite3.Connection, timezone_offset_hours: int = 3
 ) -> dict[str, list[sqlite3.Row]]:

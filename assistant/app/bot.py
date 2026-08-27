@@ -39,6 +39,10 @@ from app.ui import (
     format_action_card_html,
     home_keyboard,
     menu_section_html,
+    people_keyboard,
+    people_list_html,
+    person_card_html,
+    person_keyboard,
     remove_reply_keyboard,
     section_keyboard,
     snooze_pick_keyboard,
@@ -64,34 +68,8 @@ def esc_err(exc: Exception) -> str:
 
 def render_birthdays(conn, timezone: str) -> str:
     today = today_in_tz(timezone)
-    rows = repo.list_birthdays(conn)
-    if not rows:
-        people = repo.list_people(conn)
-        if people:
-            names = ", ".join(p["display_name"] for p in people[:20])
-            return (
-                "Дат рождения нет, но люди есть: "
-                f"{names}.\n"
-                "Напиши, например: «у папы др 25.05.1970»."
-            )
-        return "Пока пусто. Напиши, чей день рождения добавить."
-    ordered = sorted(
-        rows,
-        key=lambda r: days_until_next_birthday(r["month"], r["day"], today),
-    )
-    lines = ["Дни рождения — от ближайшего:"]
-    for r in ordered:
-        lines.append(
-            format_birthday_line(
-                r["display_name"],
-                r["month"],
-                r["day"],
-                r["year"],
-                r["relation"],
-                today,
-            )
-        )
-    return "\n".join(lines)
+    people = repo.list_people_with_birthdays(conn)
+    return people_list_html(people, today)
 
 
 def render_recent(conn) -> str:
@@ -279,9 +257,12 @@ async def _handle_chat_text(
         return
 
     if intent.kind == "list_birthdays":
+        today = today_in_tz(settings.timezone)
+        people = repo.list_people_with_birthdays(conn)
         await update.effective_message.reply_text(
-            render_birthdays(conn, settings.timezone),
-            reply_markup=home_keyboard(),
+            people_list_html(people, today),
+            parse_mode=ParseMode.HTML,
+            reply_markup=people_keyboard(people, today),
         )
         return
 
@@ -470,10 +451,54 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         if section == "home":
             await query.edit_message_text("Что открыть?", reply_markup=home_keyboard())
             return
+        if section == "people":
+            today = today_in_tz(settings.timezone)
+            people = repo.list_people_with_birthdays(conn)
+            await query.edit_message_text(
+                people_list_html(people, today),
+                parse_mode=ParseMode.HTML,
+                reply_markup=people_keyboard(people, today),
+            )
+            return
         await query.edit_message_text(
             menu_section_html(section),
             parse_mode=ParseMode.HTML,
             reply_markup=section_keyboard(section),
+        )
+        return
+
+    if data.startswith("p:view:"):
+        person_id = int(data.split(":")[2])
+        person = repo.get_person(conn, person_id)
+        if not person:
+            await query.edit_message_text("Не нашёл.")
+            return
+        bd = repo.get_birthday_for_person(conn, person_id)
+        attrs = [
+            {
+                "key": a["key"],
+                "label": a["label"],
+                "value": a["value"],
+            }
+            for a in repo.list_person_attributes(conn, person_id)
+        ]
+        card = {
+            "display_name": person["display_name"],
+            "relation": person["relation"],
+            "month": bd["month"] if bd else None,
+            "day": bd["day"] if bd else None,
+            "year": bd["year"] if bd else None,
+        }
+        today = today_in_tz(settings.timezone)
+        await query.edit_message_text(
+            person_card_html(card, attrs, today),
+            parse_mode=ParseMode.HTML,
+            reply_markup=person_keyboard(
+                person_id,
+                int(bd["month"]) if bd else None,
+                int(bd["day"]) if bd else None,
+                today.year,
+            ),
         )
         return
 

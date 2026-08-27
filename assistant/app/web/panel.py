@@ -34,9 +34,8 @@ def create_web_app(settings: Settings) -> FastAPI:
         conn = db()
         today = today_in_tz(settings.timezone)
         week = week_agenda(conn, today, settings.timezone, 7)
-        people = repo.list_people(conn)
+        people = repo.list_people_with_birthdays(conn)
         paused = repo.is_paused(conn)
-        conn.close()
 
         week_html = []
         for d, events in week:
@@ -52,11 +51,40 @@ def create_web_app(settings: Settings) -> FastAPI:
                     f"<b>{d.strftime('%d.%m')}</b><span>—</span></a>"
                 )
 
-        people_html = "".join(
-            f"<li>{_esc(p['display_name'])}"
-            f"{(' · ' + _esc(p['relation'])) if p['relation'] else ''}</li>"
-            for p in people[:40]
-        ) or "<li class='muted'>пусто</li>"
+        from app.memory.formatters import MONTHS_RU, days_until_next_birthday
+
+        with_bd = [p for p in people if p.get("month") and p.get("day")]
+        with_bd.sort(
+            key=lambda p: days_until_next_birthday(
+                int(p["month"]), int(p["day"]), today
+            )
+        )
+        people_html = ""
+        for p in with_bd[:40]:
+            month, day = int(p["month"]), int(p["day"])
+            delta = days_until_next_birthday(month, day, today)
+            soon = (
+                "сегодня"
+                if delta == 0
+                else ("завтра" if delta == 1 else f"через {delta} дн.")
+            )
+            rel = f" · {_esc(p['relation'])}" if p.get("relation") else ""
+            people_html += (
+                f"<li><b>{_esc(p['display_name'])}</b>{rel}"
+                f"<div class='muted'>{day} {MONTHS_RU[month]} · {soon}</div></li>"
+            )
+        for p in people:
+            if p.get("month") and p.get("day"):
+                continue
+            rel = f" · {_esc(p['relation'])}" if p.get("relation") else ""
+            people_html += (
+                f"<li>{_esc(p['display_name'])}{rel}"
+                f"<div class='muted'>без даты</div></li>"
+            )
+        if not people_html:
+            people_html = "<li class='muted'>пусто</li>"
+
+        conn.close()
 
         pause_btn = "снять паузу" if paused else "пауза"
         pause_action = "/resume" if paused else "/pause"

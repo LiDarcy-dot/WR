@@ -79,11 +79,6 @@ def status_html(
 
 def menu_section_html(section: str) -> str:
     tips = {
-        "people": (
-            "<b>Люди</b>\n"
-            "Например: <i>др папы 25.05.1970</i>\n"
-            "или: <i>друг Ваня 01.01.1998, вишлист …</i>"
-        ),
         "reminders": (
             "<b>Напоминания</b>\n"
             "<i>напомни завтра в 19:00 …</i>\n"
@@ -107,6 +102,155 @@ def menu_section_html(section: str) -> str:
         ),
     }
     return tips.get(section, "Меню")
+
+
+def people_list_html(people: list[dict], today: date) -> str:
+    from app.memory.formatters import MONTHS_RU, days_until_next_birthday
+
+    with_bd = [p for p in people if p.get("month") and p.get("day")]
+    without = [p for p in people if not (p.get("month") and p.get("day"))]
+    with_bd.sort(
+        key=lambda p: days_until_next_birthday(int(p["month"]), int(p["day"]), today)
+    )
+
+    lines = [
+        f"<b>Люди</b> · {len(people)}"
+        + (f" · др {len(with_bd)}" if with_bd else ""),
+        "",
+    ]
+
+    if with_bd:
+        lines.append("<b>дни рождения</b>")
+        for p in with_bd:
+            month, day = int(p["month"]), int(p["day"])
+            delta = days_until_next_birthday(month, day, today)
+            when = f"{day} {MONTHS_RU[month]}"
+            name = esc(p["display_name"])
+            rel = f" · {esc(p['relation'])}" if p.get("relation") else ""
+            year = p.get("year")
+            age = ""
+            if year:
+                nxt = today.year - int(year)
+                try:
+                    bthis = date(today.year, month, day)
+                except ValueError:
+                    bthis = date(today.year, month, min(day, 28))
+                if bthis < today:
+                    nxt += 1
+                age = f" · {nxt}"
+            if delta == 0:
+                soon = "сегодня"
+            elif delta == 1:
+                soon = "завтра"
+            else:
+                soon = f"через {delta} дн."
+            lines.append(f"<b>{name}</b>{rel}")
+            lines.append(f"  {when}{age} · <i>{soon}</i>")
+        lines.append("")
+
+    if without:
+        lines.append("<b>без даты</b>")
+        for p in without:
+            name = esc(p["display_name"])
+            rel = f" · {esc(p['relation'])}" if p.get("relation") else ""
+            lines.append(f"{name}{rel}")
+        lines.append("")
+
+    if not people:
+        lines.append("Пока никого нет.")
+        lines.append("<i>напиши: др папы 25.05.1970</i>")
+    else:
+        lines.append("<i>карточка — кнопка с именем ниже</i>")
+
+    text = "\n".join(lines)
+    if len(text) > 3900:
+        text = text[:3900] + "\n…"
+    return text
+
+
+def people_keyboard(people: list[dict], today: date) -> InlineKeyboardMarkup:
+    from app.memory.formatters import days_until_next_birthday
+
+    with_bd = [p for p in people if p.get("month") and p.get("day")]
+    with_bd.sort(
+        key=lambda p: days_until_next_birthday(int(p["month"]), int(p["day"]), today)
+    )
+    without = [p for p in people if not (p.get("month") and p.get("day"))]
+    ordered = with_bd + without
+
+    rows: list[list[InlineKeyboardButton]] = []
+    row: list[InlineKeyboardButton] = []
+    for p in ordered[:24]:
+        label = str(p["display_name"])[:18]
+        row.append(
+            InlineKeyboardButton(label, callback_data=f"p:view:{p['person_id']}")
+        )
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append(
+        [
+            InlineKeyboardButton("обновить", callback_data="menu:people"),
+            InlineKeyboardButton("календарь", callback_data="cal:today"),
+        ]
+    )
+    rows.append([InlineKeyboardButton("меню", callback_data="menu:home")])
+    return InlineKeyboardMarkup(rows)
+
+
+def person_card_html(person: dict, attrs: list[dict], today: date) -> str:
+    from app.memory.formatters import MONTHS_RU, days_until_next_birthday
+
+    name = esc(person["display_name"])
+    lines = [f"<b>{name}</b>"]
+    if person.get("relation"):
+        lines.append(esc(person["relation"]))
+    if person.get("month") and person.get("day"):
+        month, day = int(person["month"]), int(person["day"])
+        delta = days_until_next_birthday(month, day, today)
+        when = f"{day:02d}.{month:02d}"
+        if person.get("year"):
+            when += f".{int(person['year'])}"
+        if delta == 0:
+            soon = "сегодня"
+        elif delta == 1:
+            soon = "завтра"
+        else:
+            soon = f"через {delta} дн."
+        lines.append(f"др {when} · {day} {MONTHS_RU[month]} · <i>{soon}</i>")
+    else:
+        lines.append("<i>дата рождения не указана</i>")
+    for a in attrs:
+        lines.append(f"{esc(a.get('label') or a.get('key'))}: {esc(a.get('value'))}")
+    return "\n".join(lines)
+
+
+def person_keyboard(person_id: int, month: int | None, day: int | None, year: int) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    if month and day:
+        # jump to that day in current/next occurrence year for calendar
+        from datetime import date as date_cls
+
+        today = date_cls.today()
+        y = today.year
+        try:
+            if date_cls(y, month, day) < today:
+                y += 1
+        except ValueError:
+            pass
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    "день в календаре",
+                    callback_data=f"cal:d:{y:04d}-{month:02d}-{day:02d}",
+                )
+            ]
+        )
+    rows.append([InlineKeyboardButton("к списку", callback_data="menu:people")])
+    rows.append([InlineKeyboardButton("меню", callback_data="menu:home")])
+    return InlineKeyboardMarkup(rows)
 
 
 def section_keyboard(section: str) -> InlineKeyboardMarkup:

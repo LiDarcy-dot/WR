@@ -183,7 +183,22 @@ def test_calendar_month_marks(tmp_path: Path) -> None:
     assert any(25 in week for week in grid)
 
 
-def test_week_agenda(tmp_path: Path) -> None:
+def test_people_list_html(tmp_path: Path) -> None:
+    from datetime import date
+
+    from app.ui import people_list_html
+
+    db = tmp_path / "pl.sqlite3"
+    init_db(db)
+    conn = connect(db)
+    repo.upsert_person_with_birthday_and_attrs(
+        conn, "Папа", relation="папа", month=5, day=25, year=1970
+    )
+    conn.commit()
+    html = people_list_html(repo.list_people_with_birthdays(conn), date(2026, 8, 27))
+    assert "Папа" in html
+    assert "мая" in html
+
     from datetime import date
 
     from app.calendar_view import week_agenda
