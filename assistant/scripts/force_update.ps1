@@ -62,4 +62,6 @@ if ($LASTEXITCODE -ne 0) { throw "import failed" }
 
 Write-Host "FORCE UPDATE OK" -ForegroundColor Green
 Write-Host "Restart START_BOT.bat"
-Read-Host "Press Enter"
+if ($Host.Name -eq "ConsoleHost") {
+    try { Read-Host "Press Enter" } catch { }
+}

@@ -82,15 +82,44 @@ cd $env:USERPROFILE\Desktop\WR\assistant
 
 ---
 
-## Обновление кода (команда, не двойной клик по .ps1)
+## Обновление кода
 
-В **PowerShell** вставь целиком:
+Ты уже в PowerShell — **не** оборачивай команду в `powershell -Command "..."`.
+
+### Вариант A (одна короткая команда)
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$t=Join-Path $env:USERPROFILE 'Desktop\Assistant'; $tmp=Join-Path $env:TEMP ('WR-'+[guid]::NewGuid().ToString('N')); git clone --branch cursor/local-assistant-scaffold-d6ce --depth 1 https://github.com/LiDarcy-dot/WR.git $tmp; if(Test-Path (Join-Path $t 'app')){Remove-Item (Join-Path $t 'app') -Recurse -Force}; Copy-Item (Join-Path $tmp 'assistant\app') (Join-Path $t 'app') -Recurse -Force; Copy-Item (Join-Path $tmp 'assistant\main.py') (Join-Path $t 'main.py') -Force; Copy-Item (Join-Path $tmp 'assistant\requirements.txt') (Join-Path $t 'requirements.txt') -Force; Copy-Item (Join-Path $tmp 'assistant\scripts\UPDATE.cmd') (Join-Path $t 'UPDATE.cmd') -Force; Remove-Item $tmp -Recurse -Force; & (Join-Path $t '.venv\Scripts\python.exe') -m pip install -q -r (Join-Path $t 'requirements.txt'); & (Join-Path $t '.venv\Scripts\python.exe') -c \"from app.files.store import parse_password_candidates; print('OK', len(parse_password_candidates('возможные пароли a b')))\"; Write-Host 'UPDATE OK — перезапусти START_BOT.bat' -ForegroundColor Green"
+irm https://raw.githubusercontent.com/LiDarcy-dot/WR/cursor/local-assistant-scaffold-d6ce/assistant/scripts/force_update.ps1 | iex
 ```
 
-Либо после первого такого обновления можно дважды кликнуть `Desktop\Assistant\UPDATE.cmd` (это `.cmd`, не `.ps1` — блокнот не откроется).
+Должно написать `FORCE UPDATE OK`, потом Enter и перезапуск `START_BOT.bat`.
+
+### Вариант B (вставь блок целиком)
+
+```powershell
+$ErrorActionPreference = "Stop"
+$t = Join-Path $env:USERPROFILE "Desktop\Assistant"
+if (-not (Test-Path (Join-Path $t "main.py"))) { throw "No Desktop\Assistant\main.py" }
+$tmp = Join-Path $env:TEMP ("WR-" + [guid]::NewGuid().ToString("N"))
+Write-Host "Cloning..." -ForegroundColor Cyan
+git clone --branch cursor/local-assistant-scaffold-d6ce --depth 1 https://github.com/LiDarcy-dot/WR.git $tmp
+$dstApp = Join-Path $t "app"
+if (Test-Path $dstApp) { Remove-Item -LiteralPath $dstApp -Recurse -Force }
+Copy-Item (Join-Path $tmp "assistant\app") $dstApp -Recurse -Force
+Copy-Item (Join-Path $tmp "assistant\main.py") (Join-Path $t "main.py") -Force
+Copy-Item (Join-Path $tmp "assistant\requirements.txt") (Join-Path $t "requirements.txt") -Force
+Copy-Item (Join-Path $tmp "assistant\scripts") (Join-Path $t "scripts") -Recurse -Force
+Copy-Item (Join-Path $tmp "assistant\scripts\UPDATE.cmd") (Join-Path $t "UPDATE.cmd") -Force
+Copy-Item (Join-Path $tmp "assistant\START_BOT.bat") (Join-Path $t "START_BOT.bat") -Force
+Remove-Item -LiteralPath $tmp -Recurse -Force
+Set-Location $t
+$py = Join-Path $t ".venv\Scripts\python.exe"
+& $py -m pip install -q -r requirements.txt
+& $py -c "from app.files.store import ensure_files_schema; print('files OK')"
+Write-Host "UPDATE OK - restart START_BOT.bat" -ForegroundColor Green
+```
+
+После первого обновления можно запускать `Desktop\Assistant\UPDATE.cmd` (двойной клик по `.cmd`, не по `.ps1`).
 
 ---
 
