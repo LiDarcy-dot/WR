@@ -206,3 +206,43 @@ def test_password_candidates_unlock(tmp_path: Path) -> None:
     row = file_store.get_file(conn, fid)
     assert row["needs_password"] == 0
     assert file_store.get_file_password(conn, fid) == "rightpass"
+
+
+def test_temp_session_keeps_path(tmp_path: Path) -> None:
+    from app.files import temp_session as ts
+    from app.media.images import is_image_name
+
+    assert is_image_name("IMG_9545.HEIC")
+    bot_data: dict = {}
+    root = tmp_path / "data"
+    root.mkdir()
+    raw = b"hello"
+    path = ts.save_raw_temp(root, raw, "note.txt")
+    assert Path(path).exists()
+    ts.start_waiting(bot_data, 1, note="read")
+    ts.mark_ready(
+        bot_data,
+        1,
+        name="note.txt",
+        text="hello",
+        path=path,
+        kind="text",
+    )
+    assert Path(path).exists()
+    sess = ts.get_session(bot_data, 1)
+    assert sess and sess["status"] == "ready"
+    assert sess["text"] == "hello"
+    # empty text but image must still be ready
+    ts.mark_ready(
+        bot_data,
+        1,
+        name="pic.jpg",
+        text="",
+        path=path,
+        kind="image",
+        image_data_url="data:image/jpeg;base64,xx",
+    )
+    sess2 = ts.get_session(bot_data, 1)
+    assert sess2["status"] == "ready"
+    assert sess2["image_data_url"]
+    assert Path(path).exists()

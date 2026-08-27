@@ -51,19 +51,23 @@ THINK_RE = re.compile(r"<think>[\s\S]*?</think>", re.IGNORECASE)
 
 
 class LMStudioClient:
-    def __init__(self, base_url: str, model: str, timeout: float = 180.0) -> None:
+    def __init__(self, base_url: str, model: str, timeout: float = 300.0) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.timeout = timeout
 
     async def _complete(
-        self, messages: list[dict[str, str]], *, temperature: float = 0.2
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        temperature: float = 0.2,
+        model: str | None = None,
     ) -> str:
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(
                 f"{self.base_url}/chat/completions",
                 json={
-                    "model": self.model,
+                    "model": model or self.model,
                     "messages": messages,
                     "temperature": temperature,
                 },
@@ -83,7 +87,7 @@ class LMStudioClient:
         user_text: str,
         history: list[dict[str, str]] | None = None,
     ) -> AssistantReply:
-        messages: list[dict[str, str]] = [
+        messages: list[dict[str, Any]] = [
             {"role": "system", "content": system_prompt + "\n" + SYSTEM_JSON_HINT},
         ]
         if history:
@@ -99,14 +103,68 @@ class LMStudioClient:
         user_text: str,
         history: list[dict[str, str]] | None = None,
         temperature: float = 0.3,
+        model: str | None = None,
     ) -> str:
-        messages: list[dict[str, str]] = [
+        messages: list[dict[str, Any]] = [
             {"role": "system", "content": system_prompt},
         ]
         if history:
             messages.extend(history)
         messages.append({"role": "user", "content": user_text})
-        return await self._complete(messages, temperature=temperature)
+        return await self._complete(messages, temperature=temperature, model=model)
+
+    async def chat_with_image(
+        self,
+        *,
+        system_prompt: str,
+        user_text: str,
+        image_data_url: str,
+        temperature: float = 0.1,
+        model: str | None = None,
+    ) -> str:
+        # OpenAI-style multimodal content
+        user_content: list[dict[str, Any]] = [
+            {"type": "text", "text": user_text},
+            {"type": "image_url", "image_url": {"url": image_data_url}},
+        ]
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content},
+        ]
+        try:
+            return await self._complete(
+                messages, temperature=temperature, model=model
+            )
+        except httpx.HTTPStatusError:
+            # Some LM Studio builds want raw base64 without data: prefix
+            if image_data_url.startswith("data:") and "," in image_data_url:
+                raw_b64 = image_data_url.split(",", 1)[1]
+                user_content[1] = {
+                    "type": "image_url",
+                    "image_url": {"url": raw_b64},
+                }
+                messages[1] = {"role": "user", "content": user_content}
+                return await self._complete(
+                    messages, temperature=temperature, model=model
+                )
+            raise
+
+    async def transcribe(
+        self, raw: bytes, *, filename: str, model: str | None = None
+    ) -> str:
+        files = {"file": (filename or "audio.ogg", raw, "application/octet-stream")}
+        data = {"model": model or self.model}
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            response = await client.post(
+                f"{self.base_url}/audio/transcriptions",
+                data=data,
+                files=files,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        if isinstance(payload, dict):
+            return str(payload.get("text") or "").strip()
+        return str(payload).strip()
 
     async def healthcheck(self) -> bool:
         try:
@@ -123,7 +181,6 @@ def strip_think(text: str) -> str:
 
 def parse_model_content(content: str) -> AssistantReply:
     text = strip_think(content)
-    # убрать markdown fences если модель всё же обернула
     fence = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
     if fence:
         text = fence.group(1).strip()

@@ -28,6 +28,8 @@ from app.files.store import category_slug, parse_password_candidates, search_chu
 from app.files import temp_session
 from app.intent import classify_intent
 from app.llm.lm_studio import LMStudioClient, WEB_SYSTEM
+from app.llm.router import ModelRouter, answer_about_image
+from app.media.pipeline import analyze_bytes
 from app.memory.formatters import (
     days_until_next_birthday,
     format_birthday_line,
@@ -656,7 +658,14 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     if not update.effective_message or not update.effective_message.text:
         return
-    await _handle_chat_text(update, context, update.effective_message.text.strip())
+    text = update.effective_message.text.strip()
+    # Reply to a message with media/text → work with that content
+    reply = update.effective_message.reply_to_message
+    if reply and text:
+        handled = await _handle_reply_to(update, context, text, reply)
+        if handled:
+            return
+    await _handle_chat_text(update, context, text)
 
 
 async def on_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -668,9 +677,125 @@ async def on_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if pending:
         await apply_pending(update, context, pending, via="голос")
         return
-    await update.effective_message.reply_text(
-        "Голосом пока только подтверждаю карточки. Напиши текстом."
+    # otherwise treat as audio attachment for temp/analysis
+    await _ingest_media(update, context, kind="voice")
+
+
+async def on_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _ingest_media(update, context, kind="audio")
+
+
+async def _download_message_media(
+    msg,
+) -> tuple[bytes, str, str | None] | None:
+    """Return (raw, filename, mime) from a Telegram message, or None."""
+    if msg.document:
+        tg_file = await msg.document.get_file()
+        original = msg.document.file_name or f"doc_{msg.document.file_unique_id}"
+        mime = msg.document.mime_type
+        raw = bytes(await tg_file.download_as_bytearray())
+        return raw, original, mime
+    if msg.photo:
+        photo = msg.photo[-1]
+        tg_file = await photo.get_file()
+        original = f"photo_{photo.file_unique_id}.jpg"
+        raw = bytes(await tg_file.download_as_bytearray())
+        return raw, original, "image/jpeg"
+    if msg.voice:
+        tg_file = await msg.voice.get_file()
+        original = f"voice_{msg.voice.file_unique_id}.ogg"
+        raw = bytes(await tg_file.download_as_bytearray())
+        return raw, original, msg.voice.mime_type or "audio/ogg"
+    if msg.audio:
+        tg_file = await msg.audio.get_file()
+        original = msg.audio.file_name or f"audio_{msg.audio.file_unique_id}.mp3"
+        raw = bytes(await tg_file.download_as_bytearray())
+        return raw, original, msg.audio.mime_type
+    if msg.video:
+        tg_file = await msg.video.get_file()
+        original = msg.video.file_name or f"video_{msg.video.file_unique_id}.mp4"
+        raw = bytes(await tg_file.download_as_bytearray())
+        return raw, original, msg.video.mime_type
+    if msg.video_note:
+        tg_file = await msg.video_note.get_file()
+        original = f"videonote_{msg.video_note.file_unique_id}.mp4"
+        raw = bytes(await tg_file.download_as_bytearray())
+        return raw, original, "video/mp4"
+    return None
+
+
+async def _handle_reply_to(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, reply
+) -> bool:
+    """If reply targets media/text, analyze it for this question. Returns True if handled."""
+    settings: Settings = context.application.bot_data["settings"]
+    conn = context.application.bot_data["db"]
+    chat_id = update.effective_chat.id
+    router: ModelRouter = context.application.bot_data["router"]
+    bot_data = context.application.bot_data
+
+    media = await _download_message_media(reply)
+    reply_text = (reply.text or reply.caption or "").strip()
+
+    if not media and not reply_text:
+        return False
+
+    # abort phrases still win globally via classify in _handle_chat_text;
+    # here we only handle content-bearing replies
+    intent = classify_intent(text)
+    if intent.kind in {"abort", "cancel", "confirm"}:
+        return False
+
+    await update.effective_message.reply_text("Смотрю вложение из ответа…")
+    await update.effective_message.chat.send_action(ChatAction.TYPING)
+
+    if media:
+        raw, original, mime = media
+        if len(raw) > 45 * 1024 * 1024:
+            await update.effective_message.reply_text("Файл слишком большой (>45 МБ).")
+            return True
+        analyzed = await analyze_bytes(
+            conn=conn,
+            data_root=settings.assistant_data_dir,
+            router=router,
+            raw=raw,
+            original_name=original,
+            mime=mime,
+        )
+        note = text
+        if reply_text:
+            note = f"{text}\n(подпись/текст исходного: {reply_text[:500]})"
+        temp_session.start_waiting(bot_data, chat_id, note=note)
+        temp_session.mark_ready(
+            bot_data,
+            chat_id,
+            name=analyzed.name,
+            text=analyzed.text,
+            path=analyzed.path,
+            kind=analyzed.kind,
+            image_data_url=analyzed.image_data_url,
+            needs_password=analyzed.needs_password,
+        )
+        if analyzed.needs_password:
+            await update.effective_message.reply_text(
+                f"{analyzed.summary} Пришли пароль или «возможные пароли …»."
+            )
+            return True
+        await _answer_temp_file(update, context, text)
+        return True
+
+    # reply to plain text message
+    temp_session.start_waiting(bot_data, chat_id, note=text)
+    temp_session.mark_ready(
+        bot_data,
+        chat_id,
+        name="сообщение",
+        text=reply_text,
+        path=None,
+        kind="text",
     )
+    await _answer_temp_file(update, context, text)
+    return True
 
 
 def _parse_file_password(text: str) -> tuple[int | None, str | None]:
@@ -865,34 +990,47 @@ async def _reply_temp_ready(
         return
     name = sess.get("name") or "файл"
     note = sess.get("note")
+    kind = sess.get("kind") or "text"
+    body = (sess.get("text") or "").strip()
     lm: LMStudioClient = context.application.bot_data["lm"]
+
+    if not body and not sess.get("image_data_url"):
+        await update.effective_message.reply_text(
+            f"«{name}» принял временно ({kind}), содержимого пока нет.\n"
+            "«забей» — закрыть."
+        )
+        return
+
     prompt = (
-        "Пользователь прислал временный файл (не в хранилище).\n"
-        f"Имя: {name}\n"
+        f"Временное вложение «{name}» (тип {kind}), не в хранилище.\n"
     )
     if note:
-        prompt += f"Его просьба к сессии: {note}\n"
-    prompt += (
-        "Кратко (3–6 предложений) опиши, КАК будешь отвечать на вопросы по файлу: "
-        "что понял по содержанию, как будешь ссылаться на страницы, что уточнишь. "
-        "Не вываливай весь текст файла."
-    )
+        prompt += f"Просьба пользователя: {note}\n"
+    if body:
+        prompt += (
+            "Ниже распознанное содержимое. Кратко (3–8 предложений) скажи, "
+            "что понял и КАК будешь отвечать на вопросы. Не копируй всё подряд.\n\n"
+            f"{body[:8000]}"
+        )
+    else:
+        prompt += "Содержимое пока только как файл/картинка без текста. Как будешь помогать?"
+
     await update.effective_message.chat.send_action(ChatAction.TYPING)
     try:
         answer = await lm.chat_plain(
             system_prompt=temp_session.TEMP_SYSTEM,
-            user_text=temp_session.build_temp_context(sess, prompt),
+            user_text=prompt,
             temperature=0.2,
         )
     except Exception as exc:  # noqa: BLE001
+        preview = body[:800] + ("…" if len(body) > 800 else "")
         answer = (
-            f"Файл «{name}» прочитал (временно, без сохранения).\n"
-            f"Модель не ответила ({exc}). Задавай вопросы — отвечу по тексту.\n"
-            "«забей» — закрыть сессию."
+            f"«{name}» принял временно.\n{preview or '(без текста)'}\n"
+            f"Модель не ответила ({exc}). Задавай вопросы.\n«забей» — закрыть."
         )
     if len(answer) > 3900:
         answer = answer[:3900] + "\n…"
-    answer = answer + "\n\nЗадавай вопросы. «забей» — закрыть."
+    answer = answer + "\n\nЗадавай вопросы. Можно ответом (reply) на сообщение с файлом. «забей» — закрыть."
     await update.effective_message.reply_text(answer)
 
 
@@ -901,18 +1039,34 @@ async def _answer_temp_file(
 ) -> None:
     chat_id = update.effective_chat.id
     sess = temp_session.get_session(context.application.bot_data, chat_id)
-    if not sess or not sess.get("text"):
+    if not sess or sess.get("status") not in {"ready", "needs_password"}:
         await update.effective_message.reply_text("Временного файла нет.")
         return
-    lm: LMStudioClient = context.application.bot_data["lm"]
-    await update.effective_message.reply_text("Смотрю во временном файле…")
-    await update.effective_message.chat.send_action(ChatAction.TYPING)
-    try:
-        answer = await lm.chat_plain(
-            system_prompt=temp_session.TEMP_SYSTEM,
-            user_text=temp_session.build_temp_context(sess, text),
-            temperature=0.2,
+    if sess.get("status") == "needs_password":
+        await update.effective_message.reply_text(
+            "Сначала пароль: «пароль: …» или «возможные пароли …»."
         )
+        return
+
+    router: ModelRouter = context.application.bot_data["router"]
+    lm: LMStudioClient = context.application.bot_data["lm"]
+    await update.effective_message.reply_text("Смотрю во временном вложении…")
+    await update.effective_message.chat.send_action(ChatAction.TYPING)
+
+    try:
+        if sess.get("kind") == "image" and sess.get("image_data_url"):
+            answer = await answer_about_image(
+                router,
+                data_url=sess["image_data_url"],
+                question=text,
+                prior_notes=sess.get("text"),
+            )
+        else:
+            answer = await lm.chat_plain(
+                system_prompt=temp_session.TEMP_SYSTEM,
+                user_text=temp_session.build_temp_context(sess, text),
+                temperature=0.2,
+            )
     except Exception as exc:  # noqa: BLE001
         await update.effective_message.reply_text(f"Модель не ответила: {exc}")
         return
@@ -941,25 +1095,26 @@ async def _ingest_media(
     conn = context.application.bot_data["db"]
     chat_id = update.effective_chat.id
     bot_data = context.application.bot_data
+    router: ModelRouter = bot_data["router"]
     temp = temp_session.get_session(bot_data, chat_id)
     session = file_store.get_open_ingest(conn, chat_id)
 
     msg = update.effective_message
     try:
         if kind == "document" and msg.document:
-            tg_file = await msg.document.get_file()
-            original = msg.document.file_name or f"doc_{msg.document.file_unique_id}"
-            mime = msg.document.mime_type
-            raw = bytes(await tg_file.download_as_bytearray())
+            packed = await _download_message_media(msg)
         elif kind == "photo" and msg.photo:
-            photo = msg.photo[-1]
-            tg_file = await photo.get_file()
-            original = f"photo_{photo.file_unique_id}.jpg"
-            mime = "image/jpeg"
-            raw = bytes(await tg_file.download_as_bytearray())
+            packed = await _download_message_media(msg)
+        elif kind == "voice" and msg.voice:
+            packed = await _download_message_media(msg)
+        elif kind == "audio" and msg.audio:
+            packed = await _download_message_media(msg)
         else:
+            packed = await _download_message_media(msg)
+        if not packed:
             await update.effective_message.reply_text("Не понял вложение.")
             return
+        raw, original, mime = packed
     except Exception as exc:  # noqa: BLE001
         log.exception("telegram download failed")
         await update.effective_message.reply_text(f"Не скачал файл: {exc}")
@@ -969,70 +1124,81 @@ async def _ingest_media(
         await update.effective_message.reply_text("Слишком большой файл (>45 МБ).")
         return
 
-    # --- temporary read mode ---
-    if temp and temp.get("status") in {"waiting_file", "needs_password", "ready"}:
-        # if ready and new file arrives without new start — replace temp file
-        await update.effective_message.reply_text("Читаю (без сохранения)…")
-        body, err, path = temp_session.load_bytes_to_temp_text(
-            conn, settings.assistant_data_dir, raw, original
+    caption = (msg.caption or "").strip() or None
+
+    # Auto ephemeral when not saving to library
+    if not session and (
+        not temp
+        or temp.get("status") not in {"waiting_file", "needs_password", "ready"}
+    ):
+        temp_session.start_waiting(
+            bot_data,
+            chat_id,
+            note=caption or "временный разбор вложения",
         )
-        if err == "password":
-            temp_session.mark_ready(
-                bot_data,
-                chat_id,
-                name=original,
-                text="",
-                path=path,
-                needs_password=True,
-            )
-            await update.effective_message.reply_text(
-                f"«{original}» запаролен. Напиши «возможные пароли …» или «пароль: …».\n"
-                "«забей» — отменить."
-            )
-            return
-        if err == "empty":
-            temp_session.mark_ready(
-                bot_data,
-                chat_id,
-                name=original,
-                text="",
-                path=path,
-                needs_password=False,
-            )
-            await update.effective_message.reply_text(
-                f"«{original}» принял временно, но текста нет (скан/картинка).\n"
-                "«забей» — закрыть."
-            )
-            return
-        if err:
-            temp_session.clear_session(bot_data, chat_id)
-            await update.effective_message.reply_text(f"Не разобрал файл: {err}")
-            return
-        caption = (msg.caption or "").strip()
+        temp = temp_session.get_session(bot_data, chat_id)
+
+    # --- temporary / ephemeral ---
+    if (
+        not session
+        and temp
+        and temp.get("status") in {"waiting_file", "needs_password", "ready"}
+    ):
+        await update.effective_message.reply_text("Читаю (без сохранения)…")
         if caption:
             prev_note = temp.get("note")
             temp["note"] = f"{prev_note}\n{caption}".strip() if prev_note else caption
+        analyzed = await analyze_bytes(
+            conn=conn,
+            data_root=settings.assistant_data_dir,
+            router=router,
+            raw=raw,
+            original_name=original,
+            mime=mime,
+        )
         temp_session.mark_ready(
             bot_data,
             chat_id,
-            name=original,
-            text=body,
-            path=path,
-            needs_password=False,
+            name=analyzed.name,
+            text=analyzed.text,
+            path=analyzed.path,
+            kind=analyzed.kind,
+            image_data_url=analyzed.image_data_url,
+            needs_password=analyzed.needs_password,
         )
-        await _reply_temp_ready(update, context)
+        if analyzed.needs_password:
+            await update.effective_message.reply_text(
+                f"«{analyzed.name}» запаролен. «возможные пароли …» или «пароль: …».\n"
+                "«забей» — отменить."
+            )
+            return
+        if not analyzed.text and not analyzed.image_data_url:
+            await update.effective_message.reply_text(
+                f"«{analyzed.name}»: {analyzed.summary}\n«забей» — закрыть."
+            )
+            return
+        # If caption is a question, answer it; else describe readiness
+        if caption and len(caption) > 2 and classify_intent(caption).kind not in {
+            "ingest_start",
+            "temp_read_start",
+        }:
+            await update.effective_message.reply_text(analyzed.summary)
+            await _answer_temp_file(update, context, caption)
+        else:
+            await update.effective_message.reply_text(analyzed.summary)
+            await _reply_temp_ready(update, context)
         return
 
     # --- library ingest ---
     if not session:
         await update.effective_message.reply_text(
-            "Сейчас не принимаю файлы.\n"
-            "• В хранилище: «сейчас скину файлы, сохрани»\n"
-            "• Только прочитать: «скину файл, не сохраняй, прочитай»"
+            "Сейчас не принимаю файлы в хранилище.\n"
+            "• Сохранить: «сейчас скину файлы, сохрани»\n"
+            "• Только прочитать: «скину файл, не сохраняй»\n"
+            "• Или ответь (reply) на сообщение с файлом вопросом."
         )
         return
 
-    caption = (msg.caption or "").strip() or None
     comment = file_store.take_pending_comment(conn, int(session["id"]))
     if caption:
         comment = f"{comment}\n{caption}".strip() if comment else caption
@@ -1048,6 +1214,7 @@ async def _ingest_media(
         session_id=int(session["id"]),
     )
     index_msg = index_file(conn, settings.assistant_data_dir, file_id)
+    # also vision-index images into ocr_text? skip for now — index_file handles docs
     conn.commit()
 
     note = f"\nКомментарий: {comment}" if comment else ""
@@ -1316,6 +1483,12 @@ def create_app(settings: Settings) -> Application:
     conn = connect(settings.db_path)
     repo.ensure_runtime_schema(conn)
     lm = LMStudioClient(settings.lm_studio_base_url, settings.lm_studio_model)
+    router = ModelRouter(
+        lm,
+        chat_model=settings.lm_studio_model,
+        vision_model=settings.lm_studio_vision_model or None,
+        transcribe_model=settings.lm_studio_transcribe_model or None,
+    )
 
     application = (
         Application.builder()
@@ -1326,6 +1499,7 @@ def create_app(settings: Settings) -> Application:
     application.bot_data["settings"] = settings
     application.bot_data["db"] = conn
     application.bot_data["lm"] = lm
+    application.bot_data["router"] = router
 
     application.add_handler(CommandHandler("start", cmd_start))
     application.add_handler(CommandHandler("menu", cmd_menu))
@@ -1337,6 +1511,7 @@ def create_app(settings: Settings) -> Application:
     application.add_handler(CallbackQueryHandler(on_callback))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
     application.add_handler(MessageHandler(filters.VOICE, on_voice))
+    application.add_handler(MessageHandler(filters.AUDIO, on_audio))
     application.add_handler(MessageHandler(filters.Document.ALL, on_document))
     application.add_handler(MessageHandler(filters.PHOTO, on_photo))
     return application

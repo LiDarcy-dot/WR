@@ -24,6 +24,14 @@ class Settings(BaseSettings):
         default="qwen/qwen3.5-9b",
         alias="LM_STUDIO_MODEL",
     )
+    lm_studio_vision_model: str = Field(
+        default="",
+        alias="LM_STUDIO_VISION_MODEL",
+    )
+    lm_studio_transcribe_model: str = Field(
+        default="",
+        alias="LM_STUDIO_TRANSCRIBE_MODEL",
+    )
 
     assistant_data_dir: Path = Field(alias="ASSISTANT_DATA_DIR")
     timezone: str = Field(default="Europe/Moscow", alias="TIMEZONE")
