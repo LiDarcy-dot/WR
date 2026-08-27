@@ -29,9 +29,10 @@ def home_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton("Напомнить", callback_data="menu:reminders"),
             ],
             [
+                InlineKeyboardButton("Поиск", callback_data="menu:web"),
                 InlineKeyboardButton("Пауза", callback_data="ctl:pause"),
-                InlineKeyboardButton("Статус", callback_data="ctl:status"),
             ],
+            [InlineKeyboardButton("Статус", callback_data="ctl:status")],
         ]
     )
 
@@ -54,6 +55,7 @@ def welcome_html() -> str:
         "Пиши как удобно — запишу после подтверждения "
         "(кнопка, «да» или «+»).\n"
         "Календарь и «скоро» — кнопки ниже.\n"
+        "Поиск в сети: «найди в инете …» / «погугли …».\n"
         "Панель на ПК: http://127.0.0.1:8765"
     )
 
@@ -99,6 +101,12 @@ def menu_section_html(section: str) -> str:
         "settings": (
             "<b>Управление</b>\n"
             "Пауза — когда играешь или нужна вся мощность ПК."
+        ),
+        "web": (
+            "<b>Поиск в интернете</b>\n"
+            "Напиши, например:\n"
+            "<i>найди в инете топ-3 android с 1тб до 50к с доставкой в Москве</i>\n"
+            "или: <i>погугли …</i>"
         ),
     }
     return tips.get(section, "Меню")

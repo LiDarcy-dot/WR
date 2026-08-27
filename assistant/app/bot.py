@@ -22,7 +22,8 @@ from app.config import Settings
 from app.db import connect, init_db
 from app.db import repo
 from app.intent import classify_intent
-from app.llm.lm_studio import LMStudioClient
+from app.llm.lm_studio import LMStudioClient, WEB_SYSTEM
+from app.websearch.engine import format_research_context, gather_research
 from app.memory.formatters import (
     days_until_next_birthday,
     format_birthday_line,
@@ -271,6 +272,52 @@ async def _handle_chat_text(
             render_recent(conn),
             reply_markup=home_keyboard(),
         )
+        return
+
+    if intent.kind == "web_search":
+        if repo.is_paused(conn):
+            await update.effective_message.reply_text("Сейчас пауза. /resume")
+            return
+        await update.effective_message.reply_text("Ищу…")
+        await update.effective_message.chat.send_action(ChatAction.TYPING)
+        lm: LMStudioClient = context.application.bot_data["lm"]
+        try:
+            hits, pages = await gather_research(text, max_results=6, fetch_top=3)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("web search failed")
+            await update.effective_message.reply_text(
+                f"Поиск не вышел: {exc}\nПроверь интернет/VPN на ПК."
+            )
+            return
+        if not hits:
+            await update.effective_message.reply_text(
+                "Ничего не нашёл. Уточни запрос или проверь сеть на ПК."
+            )
+            return
+        context_block = format_research_context(text, hits, pages)
+        try:
+            answer = await lm.chat_plain(
+                system_prompt=WEB_SYSTEM,
+                user_text=context_block
+                + "\n\nСформулируй полезный ответ пользователю по его запросу.",
+                temperature=0.2,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.exception("web synthesize failed")
+            # fallback: just links
+            lines = ["Нашёл ссылки, но модель не ответила:", ""]
+            for h in hits[:5]:
+                lines.append(f"• {h.title}\n{h.url}")
+            lines.append(f"\n({esc_err(exc)})")
+            await update.effective_message.reply_text("\n".join(lines))
+            return
+        # Telegram limit
+        if len(answer) > 3900:
+            answer = answer[:3900] + "\n…"
+        repo.add_chat_message(conn, chat_id, "user", text)
+        repo.add_chat_message(conn, chat_id, "assistant", answer)
+        conn.commit()
+        await update.effective_message.reply_text(answer)
         return
 
     low = text.lower()

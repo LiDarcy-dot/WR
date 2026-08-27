@@ -163,6 +163,14 @@ def test_intent_confirm_and_birthdays() -> None:
         classify_intent("покажи что ты записал за сегодня в базы данных").kind
         == "recent_writes"
     )
+    assert (
+        classify_intent(
+            "найди в инете топ-3 телефона на андроиде с 1тб до 50к"
+        ).kind
+        == "web_search"
+    )
+    assert classify_intent("погугли погоду в москве").kind == "web_search"
+    assert classify_intent("как дела").kind == "chat"
 
 
 def test_calendar_month_marks(tmp_path: Path) -> None:

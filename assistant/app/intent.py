@@ -14,10 +14,34 @@ CANCEL_RE = re.compile(
     re.IGNORECASE,
 )
 
+WEB_HINTS = (
+    "найди в инет",
+    "найди в интернет",
+    "погугли",
+    "погугл",
+    "поиск в сети",
+    "поищи в сети",
+    "поищи в интернет",
+    "загугли",
+    "что сейчас купить",
+    "что лучше купить",
+    "сравни цены",
+    "актуальн",
+    "в москве купить",
+    "с доставкой",
+    "самовывоз",
+    "топ-",
+    "топ 3",
+    "топ3",
+    "look up",
+    "search the web",
+    "google ",
+)
+
 
 @dataclass
 class Intent:
-    kind: str  # confirm | cancel | list_birthdays | recent_writes | chat
+    kind: str  # confirm | cancel | list_birthdays | recent_writes | web_search | chat
     raw: str
 
 
@@ -31,6 +55,19 @@ def classify_intent(text: str) -> Intent:
         return Intent("cancel", t)
 
     low = t.lower().replace("ё", "е")
+
+    if any(h in low for h in WEB_HINTS) or low.startswith("найди ") or low.startswith(
+        "поищи "
+    ):
+        # avoid treating DB asks as web
+        if not (
+            "день рождения" in low
+            or "дни рождения" in low
+            or "в базе" in low
+            or "что ты записал" in low
+        ):
+            return Intent("web_search", t)
+
     if any(
         x in low
         for x in (
