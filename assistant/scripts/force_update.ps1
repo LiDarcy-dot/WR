@@ -41,14 +41,19 @@ Remove-Item -LiteralPath $temp -Recurse -Force
 
 $intent = Join-Path $dstApp "intent.py"
 $memory = Join-Path $dstApp "memory\formatters.py"
+$filesStore = Join-Path $dstApp "files\store.py"
 Write-Host ("intent.py exists: " + (Test-Path $intent))
 Write-Host ("formatters.py exists: " + (Test-Path $memory))
+Write-Host ("files\store.py exists: " + (Test-Path $filesStore))
 if (-not (Test-Path $intent)) { throw "intent.py still missing after copy" }
 if (-not (Test-Path $memory)) { throw "formatters.py still missing after copy" }
+if (-not (Test-Path $filesStore)) { throw "files\store.py still missing after copy" }
 
 Set-Location $Target
 $py = Join-Path $Target ".venv\Scripts\python.exe"
-& $py -c "from app.intent import classify_intent; print(classify_intent('+').kind)"
+& $py -m pip install -q -r requirements.txt
+if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
+& $py -c "from app.intent import classify_intent; from app.files.store import ensure_files_schema; print(classify_intent('+').kind)"
 if ($LASTEXITCODE -ne 0) { throw "import failed" }
 
 Write-Host "FORCE UPDATE OK" -ForegroundColor Green
