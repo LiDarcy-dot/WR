@@ -116,6 +116,7 @@ TIMEZONE=$Timezone
 "@ | Set-Content -Path ".\.env" -Encoding ASCII
 
 Write-Host "==> Init DB + folders ..." -ForegroundColor Cyan
+$env:PYTHONPATH = $TargetDir
 & $venvPy ".\scripts\init_data.py" --data-dir $TargetDir
 if ($LASTEXITCODE -ne 0) { throw "init_data failed" }
 
