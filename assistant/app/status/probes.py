@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 import httpx
 
@@ -30,6 +31,9 @@ class SystemStatus:
     net: NetProbe
     studio: StudioSnapshot
     web_panel: str
+    remote_version: str = "?"
+    update_available: bool = False
+    update_check_error: str | None = None
 
 
 async def probe_internet() -> NetProbe:
@@ -68,11 +72,29 @@ async def collect_status(
     auto_update: bool,
     web_port: int,
     probe_inference: bool = True,
+    install_root: Path | None = None,
+    update_repo: str = "LiDarcy-dot/WR",
+    update_branch: str = "cursor/local-assistant-scaffold-d6ce",
 ) -> SystemStatus:
     net = await probe_internet()
-    from app.llm.studio_ctl import fetch_studio_snapshot
-
     studio = await fetch_studio_snapshot(router, probe_inference=probe_inference)
+
+    remote_version = "?"
+    update_available = False
+    update_check_error: str | None = None
+    if install_root is not None:
+        try:
+            from app.update.apply import probe_versions
+
+            info = await probe_versions(
+                install_root, repo=update_repo, branch=update_branch
+            )
+            remote_version = info.remote
+            update_available = bool(info.newer)
+            update_check_error = info.error
+        except Exception as exc:  # noqa: BLE001
+            update_check_error = str(exc)[:200]
+
     return SystemStatus(
         bot_running=True,
         paused=paused,
@@ -82,4 +104,7 @@ async def collect_status(
         net=net,
         studio=studio,
         web_panel=f"http://127.0.0.1:{web_port}",
+        remote_version=remote_version,
+        update_available=update_available,
+        update_check_error=update_check_error,
     )

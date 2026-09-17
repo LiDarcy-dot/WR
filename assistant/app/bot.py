@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -40,8 +41,12 @@ from app.memory.formatters import (
 )
 from app.scheduler import process_due_reminders
 from app.storage_layout import ensure_data_layout
-from app.update.apply import RESTART_FLAG, schedule_restart
-from app.update.job import process_auto_update, report_startup_update, run_update_now
+from app.update.job import (
+    fallback_updater_loop,
+    process_auto_update,
+    report_startup_update,
+    run_update_now,
+)
 from app.update.versioning import format_version, read_local_version
 from app.ui import (
     calendar_keyboard,
@@ -222,6 +227,9 @@ async def _build_control_panel(context: ContextTypes.DEFAULT_TYPE) -> tuple[str,
         version=format_version(read_local_version(install_root)),
         auto_update=settings.auto_update,
         web_port=settings.web_port,
+        install_root=install_root,
+        update_repo=settings.auto_update_repo,
+        update_branch=settings.auto_update_branch,
     )
     return control_panel_html(st), control_panel_keyboard(paused=paused)
 
@@ -1659,12 +1667,37 @@ async def _post_init(application: Application) -> None:
             application.job_queue.run_repeating(
                 process_auto_update,
                 interval=max(30, int(settings.auto_update_interval_sec)),
-                first=15,
+                first=20,
                 name="auto_update",
             )
         application.job_queue.run_once(report_startup_update, when=3, name="startup_ver")
         application.job_queue.run_once(_startup_connect_lm, when=5, name="lm_autoconnect")
+    else:
+        log.error(
+            "JobQueue недоступен — поставь python-telegram-bot[job-queue]. "
+            "Включаю запасной цикл автообновления."
+        )
+        try:
+            await application.bot.send_message(
+                chat_id=settings.telegram_owner_id,
+                text=(
+                    "⚠️ JobQueue не установлен — напоминания могут не работать.\n"
+                    "Автообновление запущено в запасном режиме.\n"
+                    "В папке Assistant: "
+                    "`.venv\\Scripts\\pip install \"python-telegram-bot[job-queue]\"`"
+                ),
+            )
+        except Exception:
+            pass
+        asyncio.create_task(fallback_updater_loop(application))
+        asyncio.create_task(_startup_connect_lm_app(application))
 
+
+async def _startup_connect_lm_app(application: Application) -> None:
+    await asyncio.sleep(5)
+    from types import SimpleNamespace
+
+    await _startup_connect_lm(SimpleNamespace(application=application, bot=application.bot))
 
 async def _startup_connect_lm(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Auto-connect chat model in LM Studio after bot is up."""
@@ -1730,14 +1763,3 @@ def run_bot(settings: Settings | None = None) -> None:
     app = create_app(settings)
     log.info("Bot starting; data dir=%s", settings.assistant_data_dir)
     app.run_polling(allowed_updates=Update.ALL_TYPES)
-
-    # Clean exit after stop_running() — schedule new process once polling is gone
-    # (avoids getUpdates conflict and the old await-stop() deadlock).
-    if app.bot_data.get(RESTART_FLAG):
-        install_root = app.bot_data.get("install_root")
-        log.info("Polling stopped; scheduling restart from %s", install_root)
-        try:
-            if install_root is not None:
-                schedule_restart(Path(install_root), delay_sec=4)
-        except Exception as exc:  # noqa: BLE001
-            log.error("schedule_restart failed: %s", exc)

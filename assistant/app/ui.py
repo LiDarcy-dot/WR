@@ -120,6 +120,20 @@ def control_panel_html(st) -> str:
 
     served = ", ".join(f"<code>{esc(x)}</code>" for x in studio.served_ids[:3]) or "—"
     au = "вкл" if st.auto_update else "выкл"
+    if st.update_check_error:
+        ver_line = (
+            f"локально {esc(st.version)} · репо ? · "
+            f"ошибка сверки: {esc(st.update_check_error)}"
+        )
+    elif st.update_available:
+        ver_line = (
+            f"локально {esc(st.version)} · репо "
+            f"<b>{esc(st.remote_version)}</b> · есть обновление ⬆"
+        )
+    else:
+        ver_line = (
+            f"локально {esc(st.version)} · репо {esc(st.remote_version)} · актуально"
+        )
     tip = (
         "\n<i>GPU% в простое 1–6% — норма. Скачок при «Тест ИИ» или вопросе боту. "
         "Смотри также VRAM в LM Studio / диспетчере.</i>"
@@ -128,6 +142,7 @@ def control_panel_html(st) -> str:
     return (
         f"<b>Панель управления</b> · {esc(st.version)}\n\n"
         f"<b>Бот</b>\n{bot}\n"
+        f"Версии: {ver_line}\n"
         f"Автообновление: {au}\n"
         f"Веб: <code>{esc(st.web_panel)}</code>\n\n"
         f"<b>Интернет</b>\n{net}\n\n"

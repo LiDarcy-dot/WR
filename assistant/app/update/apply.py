@@ -360,20 +360,31 @@ def apply_update(
         )
 
 
-RESTART_FLAG = "restart_after_stop"
+RESTART_FLAG = "restart_after_stop"  # legacy; hard_restart no longer needs it
 
 
 def request_restart(application) -> None:
-    """Ask run_polling to exit cleanly, then schedule_restart from run_bot.
+    """Schedule a new bot window, then kill this process hard.
 
-    Never await application.stop()/shutdown() from a handler or job — that
-    deadlocks (stop waits for the current handler, which is waiting on stop).
+    Never await application.stop()/shutdown()/stop_running() from a handler —
+    that deadlocks. os._exit frees the Telegram getUpdates lock immediately.
     """
-    application.bot_data[RESTART_FLAG] = True
+    install_root = application.bot_data.get("install_root")
+    if install_root is not None:
+        try:
+            schedule_restart(Path(install_root), delay_sec=5)
+        except Exception as exc:  # noqa: BLE001
+            log.error("schedule_restart failed: %s", exc)
+    os._exit(0)
+
+
+def hard_restart(install_root: Path, *, delay_sec: int = 5) -> None:
+    """Spawn restart helper, then terminate this process immediately."""
     try:
-        application.stop_running()
+        schedule_restart(install_root, delay_sec=delay_sec)
     except Exception as exc:  # noqa: BLE001
-        log.error("stop_running failed: %s", exc)
+        log.error("schedule_restart failed: %s", exc)
+    os._exit(0)
 
 
 def _restart_log_path(install_root: Path) -> Path:
@@ -382,8 +393,8 @@ def _restart_log_path(install_root: Path) -> Path:
     return logs / "restart.log"
 
 
-def schedule_restart(install_root: Path, *, delay_sec: int = 4) -> None:
-    """Spawn a new bot process after a short delay (call after polling stopped)."""
+def schedule_restart(install_root: Path, *, delay_sec: int = 5) -> None:
+    """Spawn helper that kills leftover bot PIDs for this folder, then starts bot."""
     py = install_root / ".venv" / "Scripts" / "python.exe"
     if not py.exists():
         py = install_root / ".venv" / "bin" / "python"
@@ -392,9 +403,10 @@ def schedule_restart(install_root: Path, *, delay_sec: int = 4) -> None:
     main_py = install_root / "main.py"
     start_bat = install_root / "START_BOT.bat"
     log_path = _restart_log_path(install_root)
-    delay = max(2, int(delay_sec))
+    delay = max(3, int(delay_sec))
     env = os.environ.copy()
     env["WR_UPDATED"] = "1"
+    root_s = str(install_root)
 
     try:
         with log_path.open("a", encoding="utf-8") as f:
@@ -406,29 +418,55 @@ def schedule_restart(install_root: Path, *, delay_sec: int = 4) -> None:
         pass
 
     if sys.platform == "win32":
-        helper = install_root / "_wr_restart.cmd"
-        # Prefer START_BOT.bat in a new console so the user sees a live window.
-        if start_bat.exists():
-            body = [
-                "@echo off",
-                f"timeout /t {delay} /nobreak >nul",
-                f'cd /d "{install_root}"',
-                f'echo restart at %DATE% %TIME%>> "{log_path}"',
-                f'start "WR Assistant" "{start_bat}"',
-            ]
-        else:
-            body = [
-                "@echo off",
-                f"timeout /t {delay} /nobreak >nul",
-                f'cd /d "{install_root}"',
-                f'echo restart at %DATE% %TIME%>> "{log_path}"',
-                f'start "WR Assistant" cmd /k ""{py}" "{main_py}" ^& pause"',
-            ]
-        helper.write_text("\r\n".join(body) + "\r\n", encoding="utf-8")
-        # Detached helper only — the bot itself opens in a visible window via start.
+        helper_cmd = install_root / "_wr_restart.cmd"
+        helper_ps1 = install_root / "_wr_restart.ps1"
+        ps_root = root_s.replace("'", "''")
+        ps_log = str(log_path).replace("'", "''")
+        start_bat_s = str(start_bat).replace("'", "''")
+        py_s = str(py).replace("'", "''")
+        main_s = str(main_py).replace("'", "''")
+        use_bat = "1" if start_bat.exists() else "0"
+        helper_ps1.write_text(
+            "\n".join(
+                [
+                    "$ErrorActionPreference = 'SilentlyContinue'",
+                    f"Start-Sleep -Seconds {delay}",
+                    f"Set-Location -LiteralPath '{ps_root}'",
+                    f"Add-Content -Path '{ps_log}' -Value ('restart begin ' + (Get-Date -Format o))",
+                    "$procs = Get-CimInstance Win32_Process | Where-Object {",
+                    "  $_.Name -match 'python' -and $_.CommandLine -and",
+                    f"  ($_.CommandLine -like '*{ps_root}*')",
+                    "}",
+                    "foreach ($p in $procs) {",
+                    f"  Add-Content -Path '{ps_log}' -Value ('kill PID ' + $p.ProcessId)",
+                    "  Stop-Process -Id $p.ProcessId -Force",
+                    "}",
+                    "Start-Sleep -Seconds 2",
+                    f"if ({use_bat} -eq 1) {{",
+                    f"  Start-Process -FilePath '{start_bat_s}' -WorkingDirectory '{ps_root}'",
+                    "} else {",
+                    f"  Start-Process -FilePath '{py_s}' -ArgumentList '\"{main_s}\"' "
+                    f"-WorkingDirectory '{ps_root}'",
+                    "}",
+                    f"Add-Content -Path '{ps_log}' -Value ('restart launched ' + (Get-Date -Format o))",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        helper_cmd.write_text(
+            "\r\n".join(
+                [
+                    "@echo off",
+                    f'powershell -NoProfile -ExecutionPolicy Bypass -File "{helper_ps1}"',
+                ]
+            )
+            + "\r\n",
+            encoding="utf-8",
+        )
         flags = 0x00000008 | 0x00000200 | 0x08000000  # DETACHED|NEW_GROUP|NO_WINDOW
         subprocess.Popen(
-            ["cmd.exe", "/c", str(helper)],
+            ["cmd.exe", "/c", str(helper_cmd)],
             cwd=str(install_root),
             env=env,
             stdin=subprocess.DEVNULL,
@@ -448,6 +486,7 @@ def schedule_restart(install_root: Path, *, delay_sec: int = 4) -> None:
                 f.write(f"exec {py} {main_py}\n")
         except Exception:
             pass
+        # best-effort: nothing to kill cross-platform without pid file
         subprocess.Popen(
             [str(py), str(main_py)],
             cwd=str(install_root),
@@ -460,4 +499,4 @@ def schedule_restart(install_root: Path, *, delay_sec: int = 4) -> None:
         )
 
     threading = __import__("threading")
-    threading.Thread(target=_delayed, name="wr-restart", daemon=False).start()
+    threading.Thread(target=_delayed, name="wr-restart", daemon=True).start()
