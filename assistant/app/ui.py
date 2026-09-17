@@ -85,13 +85,18 @@ def status_html(
     model: str,
     n_people: int,
     n_bd: int,
+    version: str = "",
+    auto_update: bool = True,
 ) -> str:
     state = "на паузе" if paused else "на связи"
     if paused and reason:
         state += f" ({esc(reason)})"
     brain = "модель отвечает" if lm_ok else "модель молчит"
+    ver = f"Версия: {esc(version)}\n" if version else ""
+    au = "автообновление вкл" if auto_update else "автообновление выкл"
     return (
-        f"Сейчас {state}. {brain}.\n"
+        f"{ver}"
+        f"Сейчас {state}. {brain}. {au}.\n"
         f"Людей: {n_people} · дней рождения: {n_bd}"
     )
 

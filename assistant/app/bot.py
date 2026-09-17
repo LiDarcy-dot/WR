@@ -4,6 +4,7 @@ import json
 import logging
 import re
 from datetime import date
+from pathlib import Path
 
 from telegram import Update
 from telegram.constants import ChatAction, ParseMode
@@ -37,6 +38,8 @@ from app.memory.formatters import (
 )
 from app.scheduler import process_due_reminders
 from app.storage_layout import ensure_data_layout
+from app.update.job import process_auto_update, report_startup_update
+from app.update.versioning import format_version, read_local_version
 from app.ui import (
     calendar_keyboard,
     calendar_month_html,
@@ -209,6 +212,8 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     conn = context.application.bot_data["db"]
     lm: LMStudioClient = context.application.bot_data["lm"]
     paused = repo.is_paused(conn)
+    install_root = context.application.bot_data["install_root"]
+    ver = format_version(read_local_version(install_root))
     await update.effective_message.reply_text(
         status_html(
             paused=paused,
@@ -217,6 +222,8 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             model=settings.lm_studio_model,
             n_people=len(repo.list_people(conn)),
             n_bd=len(repo.list_birthdays(conn)),
+            version=ver,
+            auto_update=settings.auto_update,
         ),
         parse_mode=ParseMode.HTML,
         reply_markup=home_keyboard(paused=paused),
@@ -1271,6 +1278,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         if action == "status":
             lm: LMStudioClient = context.application.bot_data["lm"]
             paused = repo.is_paused(conn)
+            install_root = context.application.bot_data["install_root"]
+            ver = format_version(read_local_version(install_root))
             await query.edit_message_text(
                 status_html(
                     paused=paused,
@@ -1279,6 +1288,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                     model=settings.lm_studio_model,
                     n_people=len(repo.list_people(conn)),
                     n_bd=len(repo.list_birthdays(conn)),
+                    version=ver,
+                    auto_update=settings.auto_update,
                 ),
                 parse_mode=ParseMode.HTML,
                 reply_markup=home_keyboard(paused=paused),
@@ -1489,6 +1500,8 @@ def create_app(settings: Settings) -> Application:
         vision_model=settings.lm_studio_vision_model or None,
         transcribe_model=settings.lm_studio_transcribe_model or None,
     )
+    # install root = folder with main.py / VERSION (Desktop\Assistant)
+    install_root = Path(__file__).resolve().parents[1]
 
     application = (
         Application.builder()
@@ -1500,6 +1513,7 @@ def create_app(settings: Settings) -> Application:
     application.bot_data["db"] = conn
     application.bot_data["lm"] = lm
     application.bot_data["router"] = router
+    application.bot_data["install_root"] = install_root
 
     application.add_handler(CommandHandler("start", cmd_start))
     application.add_handler(CommandHandler("menu", cmd_menu))
@@ -1518,10 +1532,20 @@ def create_app(settings: Settings) -> Application:
 
 
 async def _post_init(application: Application) -> None:
+    settings: Settings = application.bot_data["settings"]
     if application.job_queue:
         application.job_queue.run_repeating(
             process_due_reminders, interval=30, first=5, name="due_reminders"
         )
+        if settings.auto_update:
+            application.job_queue.run_repeating(
+                process_auto_update,
+                interval=max(30, int(settings.auto_update_interval_sec)),
+                first=20,
+                name="auto_update",
+            )
+        # report update result / version once bot can send messages
+        application.job_queue.run_once(report_startup_update, when=3, name="startup_ver")
 
 
 async def cmd_soon(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

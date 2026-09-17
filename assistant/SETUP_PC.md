@@ -98,44 +98,20 @@ LM_STUDIO_VISION_MODEL=имя_модели_из_LM_Studio
 
 ---
 
-## Обновление кода
+## Автообновление
 
-Ты уже в PowerShell — **не** оборачивай команду в `powershell -Command "..."`.
+Бот сам раз в **120 секунд** смотрит `VERSION` в GitHub-ветке.
+Если там новее — бэкап → скачивание → замена кода → `pip` → тихий перезапуск.
+В Telegram напишет: нашёл версию / обновился / ошибка + recovery.
 
-### Вариант A (одна короткая команда)
+Файл версии: `assistant/VERSION` (сейчас `1.001`).  
+Выключить: в `.env` `AUTO_UPDATE=0`.
+
+Ручное обновление по-прежнему:
 
 ```powershell
 irm https://raw.githubusercontent.com/LiDarcy-dot/WR/cursor/local-assistant-scaffold-d6ce/assistant/scripts/force_update.ps1 | iex
 ```
-
-Должно написать `FORCE UPDATE OK`, потом Enter и перезапуск `START_BOT.bat`.
-
-### Вариант B (вставь блок целиком)
-
-```powershell
-$ErrorActionPreference = "Stop"
-$t = Join-Path $env:USERPROFILE "Desktop\Assistant"
-if (-not (Test-Path (Join-Path $t "main.py"))) { throw "No Desktop\Assistant\main.py" }
-$tmp = Join-Path $env:TEMP ("WR-" + [guid]::NewGuid().ToString("N"))
-Write-Host "Cloning..." -ForegroundColor Cyan
-git clone --branch cursor/local-assistant-scaffold-d6ce --depth 1 https://github.com/LiDarcy-dot/WR.git $tmp
-$dstApp = Join-Path $t "app"
-if (Test-Path $dstApp) { Remove-Item -LiteralPath $dstApp -Recurse -Force }
-Copy-Item (Join-Path $tmp "assistant\app") $dstApp -Recurse -Force
-Copy-Item (Join-Path $tmp "assistant\main.py") (Join-Path $t "main.py") -Force
-Copy-Item (Join-Path $tmp "assistant\requirements.txt") (Join-Path $t "requirements.txt") -Force
-Copy-Item (Join-Path $tmp "assistant\scripts") (Join-Path $t "scripts") -Recurse -Force
-Copy-Item (Join-Path $tmp "assistant\scripts\UPDATE.cmd") (Join-Path $t "UPDATE.cmd") -Force
-Copy-Item (Join-Path $tmp "assistant\START_BOT.bat") (Join-Path $t "START_BOT.bat") -Force
-Remove-Item -LiteralPath $tmp -Recurse -Force
-Set-Location $t
-$py = Join-Path $t ".venv\Scripts\python.exe"
-& $py -m pip install -q -r requirements.txt
-& $py -c "from app.files.store import ensure_files_schema; print('files OK')"
-Write-Host "UPDATE OK - restart START_BOT.bat" -ForegroundColor Green
-```
-
-После первого обновления можно запускать `Desktop\Assistant\UPDATE.cmd` (двойной клик по `.cmd`, не по `.ps1`).
 
 ---
 

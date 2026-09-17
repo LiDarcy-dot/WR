@@ -37,6 +37,14 @@ class Settings(BaseSettings):
     timezone: str = Field(default="Europe/Moscow", alias="TIMEZONE")
     web_port: int = Field(default=8765, alias="WEB_PORT")
 
+    auto_update: bool = Field(default=True, alias="AUTO_UPDATE")
+    auto_update_interval_sec: int = Field(default=120, alias="AUTO_UPDATE_INTERVAL_SEC")
+    auto_update_repo: str = Field(default="LiDarcy-dot/WR", alias="AUTO_UPDATE_REPO")
+    auto_update_branch: str = Field(
+        default="cursor/local-assistant-scaffold-d6ce",
+        alias="AUTO_UPDATE_BRANCH",
+    )
+
     @property
     def db_path(self) -> Path:
         return self.assistant_data_dir / "db" / "assistant.sqlite3"

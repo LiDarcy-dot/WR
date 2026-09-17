@@ -27,6 +27,10 @@ Copy-Item -LiteralPath $srcApp -Destination $dstApp -Recurse -Force
 
 Copy-Item (Join-Path $temp "assistant\main.py") (Join-Path $Target "main.py") -Force
 Copy-Item (Join-Path $temp "assistant\requirements.txt") (Join-Path $Target "requirements.txt") -Force
+$verSrc = Join-Path $temp "assistant\VERSION"
+if (Test-Path $verSrc) {
+    Copy-Item $verSrc (Join-Path $Target "VERSION") -Force
+}
 $srcScripts = Join-Path $temp "assistant\scripts"
 $dstScripts = Join-Path $Target "scripts"
 if (Test-Path $dstScripts) { Remove-Item -LiteralPath $dstScripts -Recurse -Force }
