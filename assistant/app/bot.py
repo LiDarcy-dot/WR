@@ -30,7 +30,7 @@ from app.files import temp_session
 from app.intent import classify_intent
 from app.llm.lm_studio import LMStudioClient, WEB_SYSTEM
 from app.llm.router import ModelRouter, answer_about_image
-from app.llm.studio_ctl import connect_chat_model, disconnect_models
+from app.llm.studio_ctl import connect_chat_model, disconnect_models, test_inference
 from app.media.pipeline import analyze_bytes
 from app.status.probes import collect_status
 from app.memory.formatters import (
@@ -243,16 +243,19 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if not _is_owner(update, settings):
         return
     conn = context.application.bot_data["db"]
-    lm: LMStudioClient = context.application.bot_data["lm"]
+    router: ModelRouter = context.application.bot_data["router"]
     paused = repo.is_paused(conn)
     install_root = context.application.bot_data["install_root"]
     ver = format_version(read_local_version(install_root))
+    from app.llm.studio_ctl import fetch_studio_snapshot
+
+    snap = await fetch_studio_snapshot(router, probe_inference=True)
     await update.effective_message.reply_text(
         status_html(
             paused=paused,
             reason=repo.get_state(conn, "pause_reason", ""),
-            lm_ok=await lm.healthcheck(),
-            model=settings.lm_studio_model,
+            lm_ok=bool(snap.inference_ok),
+            model=snap.inference_model or settings.lm_studio_model,
             n_people=len(repo.list_people(conn)),
             n_bd=len(repo.list_birthdays(conn)),
             version=ver,
@@ -1356,6 +1359,19 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             await query.edit_message_text("Подключаю ИИ в LM Studio…")
             router: ModelRouter = context.application.bot_data["router"]
             msg = await connect_chat_model(router)
+            text, kb = await _build_control_panel(context)
+            await query.edit_message_text(
+                f"{msg}\n\n{text}",
+                parse_mode=ParseMode.HTML,
+                reply_markup=kb,
+            )
+            return
+        if action == "lm_test":
+            await query.edit_message_text(
+                "Тест генерации… Смотри GPU% в диспетчере 2–5 сек."
+            )
+            router = context.application.bot_data["router"]
+            msg = await test_inference(router)
             text, kb = await _build_control_panel(context)
             await query.edit_message_text(
                 f"{msg}\n\n{text}",

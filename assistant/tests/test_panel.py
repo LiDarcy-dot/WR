@@ -14,11 +14,13 @@ def test_control_panel_intent() -> None:
 
 
 def test_control_panel_render() -> None:
+    from app.llm.studio_ctl import LoadedInstance
+
     st = SystemStatus(
         bot_running=True,
         paused=False,
         pause_reason="",
-        version="v1.002",
+        version="v1.004",
         auto_update=True,
         net=NetProbe(ok=True, latency_ms=40.0, speed_kbps=1500.0, detail="ok"),
         studio=StudioSnapshot(
@@ -26,20 +28,40 @@ def test_control_panel_render() -> None:
             chat_model="qwen/qwen3.5-9b",
             vision_model="qwen/qwen3.5-9b",
             chat_loaded=True,
-            active_role="чат · qwen/qwen3.5-9b",
-            ping_ms=12.0,
+            active_role="чат отвечает · qwen/qwen3.5-9b",
+            server_ping_ms=12.0,
+            inference_ok=True,
+            inference_ms=220.0,
+            inference_reply="OK",
+            inference_model="qwen/qwen3.5-9b",
+            served_ids=["qwen/qwen3.5-9b"],
+            loaded=[
+                LoadedInstance(
+                    model_key="qwen/qwen3.5-9b",
+                    instance_id="inst-1",
+                    source="native",
+                )
+            ],
         ),
         web_panel="http://127.0.0.1:8765",
     )
     html = control_panel_html(st)
     assert "Панель управления" in html
-    assert "v1.002" in html
+    assert "v1.004" in html
+    assert "модель отвечает" in html
+    assert "Загружено в память" in html
+    assert "inst-1" in html
+    assert "GPU%" in html
     assert "Интернет" in html
     kb = control_panel_keyboard(paused=False)
     assert kb is not None
+    flat = [b.text for row in kb.inline_keyboard for b in row]
+    assert any("Тест ИИ" in t for t in flat)
+    assert any(b.callback_data == "panel:lm_test" for row in kb.inline_keyboard for b in row)
 
 
 def test_version_bump_file() -> None:
     root = Path(__file__).resolve().parents[1]
     ver = read_local_version(root)
-    assert is_newer(ver, "1.001") or ver == "1.002"
+    assert ver == "1.004"
+    assert is_newer(ver, "1.003")

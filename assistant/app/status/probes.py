@@ -67,9 +67,12 @@ async def collect_status(
     version: str,
     auto_update: bool,
     web_port: int,
+    probe_inference: bool = True,
 ) -> SystemStatus:
     net = await probe_internet()
-    studio = await fetch_studio_snapshot(router)
+    from app.llm.studio_ctl import fetch_studio_snapshot
+
+    studio = await fetch_studio_snapshot(router, probe_inference=probe_inference)
     return SystemStatus(
         bot_running=True,
         paused=paused,

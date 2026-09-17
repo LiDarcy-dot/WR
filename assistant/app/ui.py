@@ -59,8 +59,9 @@ def control_panel_keyboard(*, paused: bool) -> InlineKeyboardMarkup:
             [InlineKeyboardButton("♻ Перезапуск бота", callback_data="panel:restart")],
             [
                 InlineKeyboardButton("🔌 Подключить ИИ", callback_data="panel:lm_on"),
-                InlineKeyboardButton("⏏ Отключить ИИ", callback_data="panel:lm_off"),
+                InlineKeyboardButton("🧪 Тест ИИ", callback_data="panel:lm_test"),
             ],
+            [InlineKeyboardButton("⏏ Отключить ИИ", callback_data="panel:lm_off")],
             [InlineKeyboardButton("« Меню", callback_data="menu:home")],
         ]
     )
@@ -70,7 +71,7 @@ def control_panel_html(st) -> str:
     """Render rich control panel from SystemStatus."""
     bot = "🟢 запущен" if st.bot_running else "🔴 нет"
     if st.paused:
-        bot = f"🟡 на паузе" + (f" ({esc(st.pause_reason)})" if st.pause_reason else "")
+        bot = "🟡 на паузе" + (f" ({esc(st.pause_reason)})" if st.pause_reason else "")
 
     if st.net.ok:
         lat = f"{st.net.latency_ms:.0f} мс" if st.net.latency_ms is not None else "?"
@@ -85,17 +86,44 @@ def control_panel_html(st) -> str:
 
     studio = st.studio
     if studio.server_ok:
-        lm_line = "🟢 LM Studio отвечает"
-        if studio.ping_ms is not None:
-            lm_line += f" · {studio.ping_ms:.0f} мс"
+        sp = (
+            f"{studio.server_ping_ms:.0f} мс"
+            if studio.server_ping_ms is not None
+            else "?"
+        )
+        lm_line = f"🟢 Local Server доступен · API {sp}"
     else:
-        lm_line = f"🔴 LM Studio молчит · {esc(studio.error or 'нет связи')}"
+        lm_line = f"🔴 Local Server молчит · {esc(studio.error or 'нет связи')}"
 
-    role = esc(studio.active_role)
-    chat_flag = "🟢" if studio.chat_loaded else "⚪"
-    vision_flag = "🟢" if studio.vision_capable_loaded else "⚪"
-    loaded = ", ".join(esc(x.model_key) for x in studio.loaded[:4]) or "—"
+    if studio.inference_ok is True:
+        inf = (
+            f"🟢 модель отвечает · {studio.inference_ms:.0f} мс\n"
+            f"ответ теста: <code>{esc(studio.inference_reply)}</code>"
+        )
+    elif studio.inference_ok is False:
+        inf = f"🔴 модель НЕ отвечает · {esc(studio.inference_reply)}"
+    else:
+        inf = "⚪ тест генерации не делался"
+
+    if studio.loaded:
+        lines = []
+        for x in studio.loaded[:5]:
+            tag = "vision" if x.vision else x.type
+            src = "" if x.source == "native" else " ≈"
+            lines.append(
+                f"• <code>{esc(x.model_key)}</code> "
+                f"(id <code>{esc(x.instance_id)}</code>, {tag}{src})"
+            )
+        loaded_block = "\n".join(lines)
+    else:
+        loaded_block = "• ничего в loaded_instances (VRAM пусто?)"
+
+    served = ", ".join(f"<code>{esc(x)}</code>" for x in studio.served_ids[:3]) or "—"
     au = "вкл" if st.auto_update else "выкл"
+    tip = (
+        "\n<i>GPU% в простое 1–6% — норма. Скачок при «Тест ИИ» или вопросе боту. "
+        "Смотри также VRAM в LM Studio / диспетчере.</i>"
+    )
 
     return (
         f"<b>Панель управления</b> · {esc(st.version)}\n\n"
@@ -104,10 +132,13 @@ def control_panel_html(st) -> str:
         f"Веб: <code>{esc(st.web_panel)}</code>\n\n"
         f"<b>Интернет</b>\n{net}\n\n"
         f"<b>ИИ (LM Studio)</b>\n{lm_line}\n"
-        f"Роль: <b>{role}</b>\n"
-        f"{chat_flag} чат: <code>{esc(studio.chat_model)}</code>\n"
-        f"{vision_flag} vision: <code>{esc(studio.vision_model)}</code>\n"
-        f"Загружено сейчас: {loaded}\n"
+        f"Роль: <b>{esc(studio.active_role)}</b>\n"
+        f"Конфиг чат: <code>{esc(studio.chat_model)}</code>\n"
+        f"Конфиг vision: <code>{esc(studio.vision_model)}</code>\n"
+        f"{inf}\n"
+        f"/v1/models: {served}\n"
+        f"<b>Загружено в память</b>\n{loaded_block}\n"
+        f"{tip}\n"
     )
 
 
