@@ -89,6 +89,12 @@ class ModelRouter:
         picked = self._pick(ids, ("whisper", "speech", "asr", "transcri"), "")
         return picked or None
 
+    async def load_model(self, model_id: str) -> None:
+        await self._load_model(model_id)
+
+    async def unload_model(self, model_id: str) -> None:
+        await self._unload_model(model_id)
+
     async def _load_model(self, model_id: str) -> None:
         # Best-effort: LM Studio native load (0.4+)
         payloads = (
@@ -100,6 +106,7 @@ class ModelRouter:
             f"{self.native_base}/api/v1/models/load",
             f"{self.native_base}/api/v0/models/load",
         )
+        last_err: str | None = None
         async with httpx.AsyncClient(timeout=300.0) as client:
             for url in urls:
                 for payload in payloads:
@@ -108,24 +115,35 @@ class ModelRouter:
                         if r.status_code < 400:
                             log.info("loaded model %s via %s", model_id, url)
                             return
+                        last_err = f"{r.status_code} {r.text[:200]}"
                     except Exception as exc:  # noqa: BLE001
+                        last_err = str(exc)
                         log.debug("load %s failed: %s", url, exc)
         # Fallback: just point subsequent requests at the model id
-        log.info("using model id without explicit load: %s", model_id)
+        log.info(
+            "using model id without explicit load: %s (%s)",
+            model_id,
+            last_err or "ok",
+        )
 
     async def _unload_model(self, model_id: str) -> None:
         urls = (
             f"{self.native_base}/api/v1/models/unload",
             f"{self.native_base}/api/v0/models/unload",
         )
+        payloads = (
+            {"instance_id": model_id},
+            {"model": model_id, "instance_id": model_id},
+        )
         async with httpx.AsyncClient(timeout=60.0) as client:
             for url in urls:
-                try:
-                    r = await client.post(url, json={"model": model_id, "instance_id": model_id})
-                    if r.status_code < 400:
-                        return
-                except Exception:
-                    continue
+                for payload in payloads:
+                    try:
+                        r = await client.post(url, json=payload)
+                        if r.status_code < 400:
+                            return
+                    except Exception:
+                        continue
 
     @asynccontextmanager
     async def use_model(self, model_id: str) -> AsyncIterator[str]:

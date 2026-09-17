@@ -37,8 +37,76 @@ def home_keyboard(*, paused: bool = False) -> InlineKeyboardMarkup:
                 InlineKeyboardButton("Поиск", callback_data="menu:web"),
                 pause_btn,
             ],
+            [
+                InlineKeyboardButton("Панель управления", callback_data="panel:show"),
+            ],
             [InlineKeyboardButton("Статус", callback_data="ctl:status")],
         ]
+    )
+
+
+def control_panel_keyboard(*, paused: bool) -> InlineKeyboardMarkup:
+    pause_btn = (
+        InlineKeyboardButton("▶ Включить ассистента", callback_data="panel:resume")
+        if paused
+        else InlineKeyboardButton("⏸ Выключить (пауза)", callback_data="panel:pause")
+    )
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("🔄 Обновить статусы", callback_data="panel:refresh")],
+            [pause_btn],
+            [InlineKeyboardButton("♻ Перезапуск бота", callback_data="panel:restart")],
+            [
+                InlineKeyboardButton("🔌 Подключить ИИ", callback_data="panel:lm_on"),
+                InlineKeyboardButton("⏏ Отключить ИИ", callback_data="panel:lm_off"),
+            ],
+            [InlineKeyboardButton("« Меню", callback_data="menu:home")],
+        ]
+    )
+
+
+def control_panel_html(st) -> str:
+    """Render rich control panel from SystemStatus."""
+    bot = "🟢 запущен" if st.bot_running else "🔴 нет"
+    if st.paused:
+        bot = f"🟡 на паузе" + (f" ({esc(st.pause_reason)})" if st.pause_reason else "")
+
+    if st.net.ok:
+        lat = f"{st.net.latency_ms:.0f} мс" if st.net.latency_ms is not None else "?"
+        spd = (
+            f"{st.net.speed_kbps/1024:.2f} МБ/с"
+            if st.net.speed_kbps and st.net.speed_kbps > 1024
+            else (f"{st.net.speed_kbps:.0f} КБ/с" if st.net.speed_kbps else "?")
+        )
+        net = f"🟢 есть · ping {lat} · ≈{spd}"
+    else:
+        net = f"🔴 нет · {esc(st.net.detail)}"
+
+    studio = st.studio
+    if studio.server_ok:
+        lm_line = "🟢 LM Studio отвечает"
+        if studio.ping_ms is not None:
+            lm_line += f" · {studio.ping_ms:.0f} мс"
+    else:
+        lm_line = f"🔴 LM Studio молчит · {esc(studio.error or 'нет связи')}"
+
+    role = esc(studio.active_role)
+    chat_flag = "🟢" if studio.chat_loaded else "⚪"
+    vision_flag = "🟢" if studio.vision_capable_loaded else "⚪"
+    loaded = ", ".join(esc(x.model_key) for x in studio.loaded[:4]) or "—"
+    au = "вкл" if st.auto_update else "выкл"
+
+    return (
+        f"<b>Панель управления</b> · {esc(st.version)}\n\n"
+        f"<b>Бот</b>\n{bot}\n"
+        f"Автообновление: {au}\n"
+        f"Веб: <code>{esc(st.web_panel)}</code>\n\n"
+        f"<b>Интернет</b>\n{net}\n\n"
+        f"<b>ИИ (LM Studio)</b>\n{lm_line}\n"
+        f"Роль: <b>{role}</b>\n"
+        f"{chat_flag} чат: <code>{esc(studio.chat_model)}</code>\n"
+        f"{vision_flag} vision: <code>{esc(studio.vision_model)}</code>\n"
+        f"Загружено сейчас: {loaded}\n"
     )
 
 
@@ -71,6 +139,7 @@ def welcome_html() -> str:
         "Файлы: «сейчас скину файлы, сохрани» → файлы → «готово».\n"
         "Временно (без хранения): «скину файл, не сохраняй, прочитай».\n"
         "Отмена: «забей». Вопросы по мануалам: «посмотри в мануалах …».\n"
+        "Панель управления — кнопка в меню.\n"
         "Календарь и «скоро» — кнопки ниже.\n"
         "Поиск в сети: «найди в инете …» / «погугли …».\n"
         "Панель на ПК: http://127.0.0.1:8765"

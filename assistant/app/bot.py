@@ -30,7 +30,9 @@ from app.files import temp_session
 from app.intent import classify_intent
 from app.llm.lm_studio import LMStudioClient, WEB_SYSTEM
 from app.llm.router import ModelRouter, answer_about_image
+from app.llm.studio_ctl import connect_chat_model, disconnect_models
 from app.media.pipeline import analyze_bytes
+from app.status.probes import collect_status
 from app.memory.formatters import (
     days_until_next_birthday,
     format_birthday_line,
@@ -38,12 +40,15 @@ from app.memory.formatters import (
 )
 from app.scheduler import process_due_reminders
 from app.storage_layout import ensure_data_layout
+from app.update.apply import schedule_restart
 from app.update.job import process_auto_update, report_startup_update
 from app.update.versioning import format_version, read_local_version
 from app.ui import (
     calendar_keyboard,
     calendar_month_html,
     confirm_keyboard,
+    control_panel_html,
+    control_panel_keyboard,
     day_detail_html,
     day_keyboard,
     format_action_card_html,
@@ -193,6 +198,34 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+async def cmd_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    settings: Settings = context.application.bot_data["settings"]
+    if not _is_owner(update, settings):
+        return
+    await update.effective_message.reply_text("Собираю статусы…")
+    text, kb = await _build_control_panel(context)
+    await update.effective_message.reply_text(
+        text, parse_mode=ParseMode.HTML, reply_markup=kb
+    )
+
+
+async def _build_control_panel(context: ContextTypes.DEFAULT_TYPE) -> tuple[str, object]:
+    settings: Settings = context.application.bot_data["settings"]
+    conn = context.application.bot_data["db"]
+    router: ModelRouter = context.application.bot_data["router"]
+    install_root = context.application.bot_data["install_root"]
+    paused = repo.is_paused(conn)
+    st = await collect_status(
+        router=router,
+        paused=paused,
+        pause_reason=repo.get_state(conn, "pause_reason", "") or "",
+        version=format_version(read_local_version(install_root)),
+        auto_update=settings.auto_update,
+        web_port=settings.web_port,
+    )
+    return control_panel_html(st), control_panel_keyboard(paused=paused)
+
+
 async def cmd_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     settings: Settings = context.application.bot_data["settings"]
     if not _is_owner(update, settings):
@@ -327,6 +360,14 @@ async def _handle_chat_text(
         await update.effective_message.reply_text(
             render_recent(conn),
             reply_markup=home_keyboard(paused=repo.is_paused(conn)),
+        )
+        return
+
+    if intent.kind == "control_panel":
+        await update.effective_message.reply_text("Собираю статусы…")
+        text, kb = await _build_control_panel(context)
+        await update.effective_message.reply_text(
+            text, parse_mode=ParseMode.HTML, reply_markup=kb
         )
         return
 
@@ -1276,24 +1317,82 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             )
             return
         if action == "status":
-            lm: LMStudioClient = context.application.bot_data["lm"]
-            paused = repo.is_paused(conn)
-            install_root = context.application.bot_data["install_root"]
-            ver = format_version(read_local_version(install_root))
+            text, kb = await _build_control_panel(context)
             await query.edit_message_text(
-                status_html(
-                    paused=paused,
-                    reason=repo.get_state(conn, "pause_reason", ""),
-                    lm_ok=await lm.healthcheck(),
-                    model=settings.lm_studio_model,
-                    n_people=len(repo.list_people(conn)),
-                    n_bd=len(repo.list_birthdays(conn)),
-                    version=ver,
-                    auto_update=settings.auto_update,
-                ),
-                parse_mode=ParseMode.HTML,
-                reply_markup=home_keyboard(paused=paused),
+                text, parse_mode=ParseMode.HTML, reply_markup=kb
             )
+            return
+
+    if data.startswith("panel:"):
+        action = data.split(":", 1)[1]
+        if action in {"show", "refresh"}:
+            await query.edit_message_text("Обновляю…")
+            text, kb = await _build_control_panel(context)
+            await query.edit_message_text(
+                text, parse_mode=ParseMode.HTML, reply_markup=kb
+            )
+            return
+        if action == "pause":
+            repo.set_paused(conn, True, "panel")
+            conn.commit()
+            text, kb = await _build_control_panel(context)
+            await query.edit_message_text(
+                "Ассистент на паузе.\n\n" + text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=kb,
+            )
+            return
+        if action == "resume":
+            repo.set_paused(conn, False)
+            conn.commit()
+            text, kb = await _build_control_panel(context)
+            await query.edit_message_text(
+                "Ассистент снова в работе.\n\n" + text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=kb,
+            )
+            return
+        if action == "lm_on":
+            await query.edit_message_text("Подключаю ИИ в LM Studio…")
+            router: ModelRouter = context.application.bot_data["router"]
+            msg = await connect_chat_model(router)
+            text, kb = await _build_control_panel(context)
+            await query.edit_message_text(
+                f"{msg}\n\n{text}",
+                parse_mode=ParseMode.HTML,
+                reply_markup=kb,
+            )
+            return
+        if action == "lm_off":
+            await query.edit_message_text("Отключаю модели LM Studio…")
+            router = context.application.bot_data["router"]
+            msg = await disconnect_models(router)
+            text, kb = await _build_control_panel(context)
+            await query.edit_message_text(
+                f"{msg}\n\n{text}",
+                parse_mode=ParseMode.HTML,
+                reply_markup=kb,
+            )
+            return
+        if action == "restart":
+            install_root = context.application.bot_data["install_root"]
+            await query.edit_message_text(
+                "Перезапускаюсь… Через несколько секунд снова буду на связи."
+            )
+            try:
+                schedule_restart(install_root)
+            except Exception as exc:  # noqa: BLE001
+                await query.edit_message_text(f"Не смог перезапуститься: {exc}")
+                return
+            import asyncio
+            import os
+
+            await asyncio.sleep(1.0)
+            try:
+                await context.application.stop()
+            except Exception:
+                pass
+            os._exit(0)
             return
 
     if data.startswith("menu:"):
@@ -1520,6 +1619,7 @@ def create_app(settings: Settings) -> Application:
     application.add_handler(CommandHandler("calendar", cmd_calendar))
     application.add_handler(CommandHandler("soon", cmd_soon))
     application.add_handler(CommandHandler("status", cmd_status))
+    application.add_handler(CommandHandler("panel", cmd_panel))
     application.add_handler(CommandHandler("pause", cmd_pause))
     application.add_handler(CommandHandler("resume", cmd_resume))
     application.add_handler(CallbackQueryHandler(on_callback))
@@ -1544,8 +1644,33 @@ async def _post_init(application: Application) -> None:
                 first=20,
                 name="auto_update",
             )
-        # report update result / version once bot can send messages
         application.job_queue.run_once(report_startup_update, when=3, name="startup_ver")
+        application.job_queue.run_once(_startup_connect_lm, when=5, name="lm_autoconnect")
+
+
+async def _startup_connect_lm(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Auto-connect chat model in LM Studio after bot is up."""
+    settings: Settings = context.application.bot_data["settings"]
+    router: ModelRouter = context.application.bot_data["router"]
+    try:
+        msg = await connect_chat_model(router)
+        log.info("LM autoconnect: %s", msg)
+        try:
+            await context.bot.send_message(
+                chat_id=settings.telegram_owner_id,
+                text=f"LM Studio: {msg}",
+            )
+        except Exception:
+            pass
+    except Exception as exc:  # noqa: BLE001
+        log.warning("LM autoconnect failed: %s", exc)
+        try:
+            await context.bot.send_message(
+                chat_id=settings.telegram_owner_id,
+                text=f"Не смог сам подключить ИИ: {exc}",
+            )
+        except Exception:
+            pass
 
 
 async def cmd_soon(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

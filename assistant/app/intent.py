@@ -357,6 +357,17 @@ def classify_intent(text: str) -> Intent:
     if any(
         x in low
         for x in (
+            "панель управления",
+            "панель управл",
+            "открой панель",
+            "control panel",
+        )
+    ) or low in {"панель", "статусы", "/panel"}:
+        return Intent("control_panel", t)
+
+    if any(
+        x in low
+        for x in (
             "что ты записал",
             "что записано",
             "за сегодня",
