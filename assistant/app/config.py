@@ -15,6 +15,10 @@ class Settings(BaseSettings):
 
     telegram_bot_token: str = Field(alias="TELEGRAM_BOT_TOKEN")
     telegram_owner_id: int = Field(alias="TELEGRAM_OWNER_ID")
+    telegram_group_id: int | None = Field(default=None, alias="TELEGRAM_GROUP_ID")
+    # Optional MTProto credentials to list forum topics (defaults = Telegram Android)
+    telegram_api_id: int | None = Field(default=None, alias="TELEGRAM_API_ID")
+    telegram_api_hash: str = Field(default="", alias="TELEGRAM_API_HASH")
 
     lm_studio_base_url: str = Field(
         default="http://127.0.0.1:1234/v1",

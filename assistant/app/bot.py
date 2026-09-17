@@ -41,6 +41,12 @@ from app.memory.formatters import (
 )
 from app.scheduler import process_due_reminders
 from app.storage_layout import ensure_data_layout
+from app.topics.service import (
+    cmd_topics,
+    maybe_learn_topic_from_message,
+    on_forum_topic_service,
+    process_due_topic_hello_deletions,
+)
 from app.update.job import (
     fallback_updater_loop,
     process_auto_update,
@@ -717,6 +723,8 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     if not update.effective_message or not update.effective_message.text:
         return
+    # Discover unknown forum topics (learn mode / first sight)
+    await maybe_learn_topic_from_message(update, context)
     text = update.effective_message.text.strip()
     # Reply to a message with media/text → work with that content
     reply = update.effective_message.reply_to_message
@@ -1648,6 +1656,14 @@ def create_app(settings: Settings) -> Application:
     application.add_handler(CommandHandler("panel", cmd_panel))
     application.add_handler(CommandHandler("pause", cmd_pause))
     application.add_handler(CommandHandler("resume", cmd_resume))
+    application.add_handler(CommandHandler("topics", cmd_topics))
+    application.add_handler(
+        MessageHandler(
+            filters.StatusUpdate.FORUM_TOPIC_CREATED
+            | filters.StatusUpdate.FORUM_TOPIC_EDITED,
+            on_forum_topic_service,
+        )
+    )
     application.add_handler(CallbackQueryHandler(on_callback))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
     application.add_handler(MessageHandler(filters.VOICE, on_voice))
@@ -1672,7 +1688,12 @@ async def _post_init(application: Application) -> None:
             )
         application.job_queue.run_once(report_startup_update, when=3, name="startup_ver")
         application.job_queue.run_once(_startup_connect_lm, when=5, name="lm_autoconnect")
-    else:
+        application.job_queue.run_repeating(
+            process_due_topic_hello_deletions,
+            interval=60,
+            first=45,
+            name="topic_hello_cleanup",
+        )    else:
         log.error(
             "JobQueue недоступен — поставь python-telegram-bot[job-queue]. "
             "Включаю запасной цикл автообновления."

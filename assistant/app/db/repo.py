@@ -603,6 +603,9 @@ def ensure_runtime_schema(conn: sqlite3.Connection) -> None:
         """
     )
     ensure_files_schema(conn)
+    from app.topics.store import ensure_topics_schema
+
+    ensure_topics_schema(conn)
     # Refresh default persona so old installs learn about the DB
     conn.execute(
         """
