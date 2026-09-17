@@ -107,10 +107,15 @@ LM_STUDIO_VISION_MODEL=имя_модели_из_LM_Studio
 Файл версии: `assistant/VERSION` (сейчас `1.001`).  
 Выключить: в `.env` `AUTO_UPDATE=0`.
 
-Ручное обновление по-прежнему:
+Ручное обновление (**не использовать irm / raw.githubusercontent** — у тебя они не работают):
+
+1. Двойной клик: `Desktop\Assistant\UPDATE.cmd`  
+2. Или весь блок из `Desktop\Assistant\UPDATE_NOW.txt` вставить в PowerShell (только `git clone`).
 
 ```powershell
-irm https://raw.githubusercontent.com/LiDarcy-dot/WR/cursor/local-assistant-scaffold-d6ce/assistant/scripts/force_update.ps1 | iex
+$t="$env:TEMP\WR-fu"; Remove-Item $t -Recurse -Force -EA SilentlyContinue
+git clone --branch cursor/local-assistant-scaffold-d6ce --depth 1 https://github.com/LiDarcy-dot/WR.git $t
+& "$t\assistant\scripts\force_update.ps1"
 ```
 
 ---
@@ -147,20 +152,12 @@ irm https://raw.githubusercontent.com/LiDarcy-dot/WR/cursor/local-assistant-scaf
 
 ## Если бот «перезапускается», но не отвечает / сам не обновился
 
-До v1.006 автообновление часто ставило файлы, а потом зависало на перезапуске —
-окно есть, `/start` молчит, новая версия «как будто не применилась».
-
 1. Закрой все окна бота.  
-2. В PowerShell:
+2. Двойной клик `Desktop\Assistant\UPDATE.cmd`  
+   **или** вставь в PowerShell блок из `UPDATE_NOW.txt` (только git, без irm).  
+3. В Telegram должно прийти сообщение с версией **v1.007+** и сверкой «локально / репо».
 
-```powershell
-irm https://raw.githubusercontent.com/LiDarcy-dot/WR/cursor/local-assistant-scaffold-d6ce/assistant/scripts/force_update.ps1 | iex
-```
-
-Скрипт убьёт зависший python, подтянет **v1.006+** и сам откроет `START_BOT.bat`.  
-3. В Telegram должно прийти: локальная версия и версия в репо. Если есть новее — обновится сам и откроет новое окно.
-
-Панель → «Проверить обновление» — ручная сверка. В `.env` должно быть `AUTO_UPDATE=1`.
+Панель → «Проверить обновление». В `.env`: `AUTO_UPDATE=1`.
 
 ## Python 3.14
 

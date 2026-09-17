@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
@@ -30,6 +31,8 @@ COPY_NAMES = (
     "requirements.txt",
     "VERSION",
     "START_BOT.bat",
+    "UPDATE.cmd",
+    "UPDATE_NOW.txt",
     "scripts",
     "SETUP_PC.md",
 )
@@ -98,14 +101,52 @@ async def fetch_remote_version(
     branch: str,
     timeout: float = 30.0,
 ) -> str:
+    """Fetch assistant/VERSION from GitHub without relying on raw.githubusercontent.
+
+    Many networks block raw.githubusercontent.com (same reason irm|iex fails).
+    Prefer API / github.com/raw / jsDelivr / codeload zip peek.
+    """
     ref = _branch_ref(branch)
-    urls = (
+    urls_text = (
+        # github.com raw path (often works when raw.githubusercontent is blocked)
+        f"https://github.com/{repo}/raw/{ref}/assistant/VERSION",
+        f"https://github.com/{repo}/raw/{branch}/assistant/VERSION",
+        # jsDelivr CDN
+        f"https://cdn.jsdelivr.net/gh/{repo}@{ref}/assistant/VERSION",
+        f"https://cdn.jsdelivr.net/gh/{repo}@{branch}/assistant/VERSION",
+        # raw.githubusercontent last (may be blocked)
         f"https://raw.githubusercontent.com/{repo}/{ref}/assistant/VERSION",
         f"https://raw.githubusercontent.com/{repo}/{branch}/assistant/VERSION",
     )
+    api_url = (
+        f"https://api.github.com/repos/{repo}/contents/assistant/VERSION"
+        f"?ref={ref}"
+    )
     last_err: Exception | None = None
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-        for url in urls:
+        # 1) GitHub Contents API (base64)
+        try:
+            r = await client.get(
+                api_url,
+                headers={"Accept": "application/vnd.github.raw"},
+            )
+            if r.status_code < 400 and r.text.strip():
+                # raw accept may return plain text
+                return normalize_version(r.text)
+            r = await client.get(
+                api_url,
+                headers={"Accept": "application/vnd.github+json"},
+            )
+            if r.status_code < 400:
+                data = r.json()
+                content = data.get("content") or ""
+                if content:
+                    decoded = base64.b64decode(content).decode("utf-8", errors="replace")
+                    return normalize_version(decoded)
+        except Exception as exc:  # noqa: BLE001
+            last_err = exc
+
+        for url in urls_text:
             try:
                 r = await client.get(url)
                 r.raise_for_status()
@@ -113,6 +154,7 @@ async def fetch_remote_version(
             except Exception as exc:  # noqa: BLE001
                 last_err = exc
                 continue
+
     raise RuntimeError(f"VERSION fetch failed: {last_err}")
 
 

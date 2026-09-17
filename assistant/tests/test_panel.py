@@ -20,7 +20,7 @@ def test_control_panel_render() -> None:
         bot_running=True,
         paused=False,
         pause_reason="",
-        version="v1.006",
+        version="v1.007",
         auto_update=True,
         net=NetProbe(ok=True, latency_ms=40.0, speed_kbps=1500.0, detail="ok"),
         studio=StudioSnapshot(
@@ -44,12 +44,12 @@ def test_control_panel_render() -> None:
             ],
         ),
         web_panel="http://127.0.0.1:8765",
-        remote_version="1.006",
+        remote_version="1.007",
         update_available=False,
     )
     html = control_panel_html(st)
     assert "Панель управления" in html
-    assert "v1.006" in html
+    assert "v1.007" in html
     assert "модель отвечает" in html
     assert "Загружено в память" in html
     assert "актуально" in html
@@ -66,5 +66,5 @@ def test_control_panel_render() -> None:
 def test_version_bump_file() -> None:
     root = Path(__file__).resolve().parents[1]
     ver = read_local_version(root)
-    assert ver == "1.006"
-    assert is_newer(ver, "1.005")
+    assert ver == "1.007"
+    assert is_newer(ver, "1.006")

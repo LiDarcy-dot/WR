@@ -198,7 +198,7 @@ async def _apply_and_restart(
         f"{outcome.message}\n"
         f"Бэкап: {outcome.backup_dir}\n"
         "Если через ~20 сек не отвечу — закрой окна и запусти "
-        "force_update.ps1 / START_BOT.bat.",
+        "UPDATE.cmd (двойной клик) или блок из UPDATE_NOW.txt.",
     )
     # schedule helper first, then hard-kill self (never await application.stop)
     hard_restart(install_root, delay_sec=5)

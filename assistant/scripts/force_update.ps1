@@ -60,6 +60,14 @@ $upd = Join-Path $temp "assistant\scripts\UPDATE.cmd"
 if (Test-Path $upd) {
     Copy-Item $upd (Join-Path $Target "UPDATE.cmd") -Force
 }
+$updRoot = Join-Path $temp "assistant\UPDATE.cmd"
+if (Test-Path $updRoot) {
+    Copy-Item $updRoot (Join-Path $Target "UPDATE.cmd") -Force
+}
+$updNow = Join-Path $temp "assistant\UPDATE_NOW.txt"
+if (Test-Path $updNow) {
+    Copy-Item $updNow (Join-Path $Target "UPDATE_NOW.txt") -Force
+}
 $setup = Join-Path $temp "assistant\SETUP_PC.md"
 if (Test-Path $setup) {
     Copy-Item $setup (Join-Path $Target "SETUP_PC.md") -Force

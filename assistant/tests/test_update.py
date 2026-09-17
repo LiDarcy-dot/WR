@@ -79,10 +79,10 @@ def test_schedule_restart_writes_helper(tmp_path: Path) -> None:
     assert (tmp_path / "logs" / "restart.log").exists()
 
 
-def test_version_is_1006() -> None:
+def test_version_is_1007() -> None:
     root = Path(__file__).resolve().parents[1]
-    assert read_local_version(root) == "1.006"
-    assert is_newer("1.006", "1.005")
+    assert read_local_version(root) == "1.007"
+    assert is_newer("1.007", "1.006")
 
 
 def test_request_restart_schedules_then_exits(monkeypatch, tmp_path: Path) -> None:
