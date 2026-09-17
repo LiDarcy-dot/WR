@@ -54,3 +54,47 @@ def test_read_local_version(tmp_path: Path) -> None:
     assert read_local_version(tmp_path) == "0.000"
     (tmp_path / "VERSION").write_text("1.001\n", encoding="utf-8")
     assert read_local_version(tmp_path) == "1.001"
+
+
+def test_request_restart_sets_flag() -> None:
+    from app.update.apply import RESTART_FLAG, request_restart
+
+    class FakeApp:
+        def __init__(self) -> None:
+            self.bot_data: dict = {}
+            self.stopped = False
+
+        def stop_running(self) -> None:
+            self.stopped = True
+
+    app = FakeApp()
+    request_restart(app)
+    assert app.bot_data.get(RESTART_FLAG) is True
+    assert app.stopped is True
+
+
+def test_schedule_restart_writes_helper(tmp_path: Path) -> None:
+    import sys
+
+    import pytest
+
+    from app.update.apply import schedule_restart
+
+    if sys.platform != "win32":
+        pytest.skip("restart helper cmd is Windows-specific")
+
+    (tmp_path / "main.py").write_text("print(1)\n", encoding="utf-8")
+    (tmp_path / "START_BOT.bat").write_text("@echo off\n", encoding="utf-8")
+    schedule_restart(tmp_path, delay_sec=2)
+    helper = tmp_path / "_wr_restart.cmd"
+    assert helper.exists()
+    text = helper.read_text(encoding="utf-8")
+    assert "START_BOT.bat" in text
+    assert "timeout /t 2" in text
+    assert (tmp_path / "logs" / "restart.log").exists()
+
+
+def test_version_is_1005() -> None:
+    root = Path(__file__).resolve().parents[1]
+    assert read_local_version(root) == "1.005"
+    assert is_newer("1.005", "1.004")

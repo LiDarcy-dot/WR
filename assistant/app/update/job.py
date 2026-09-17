@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 
 from telegram.ext import ContextTypes
 
@@ -11,7 +10,7 @@ from app.update.apply import (
     check_for_update,
     consume_result,
     probe_versions,
-    schedule_restart,
+    request_restart,
 )
 from app.update.versioning import format_version, read_local_version
 
@@ -153,26 +152,16 @@ async def _apply_and_restart(
 
     await notify_owner(
         context,
-        "📦 Файлы обновлены, останавливаю polling и перезапускаюсь…\n"
+        "📦 Файлы обновлены. Останавливаюсь и через пару секунд "
+        "открою новое окно бота…\n"
         f"{outcome.message}\n"
-        f"Бэкап: {outcome.backup_dir}",
+        f"Бэкап: {outcome.backup_dir}\n"
+        "Если через ~15 сек не отвечу — закрой старое окно и "
+        "запусти START_BOT.bat.",
     )
-    # Stop Telegram polling FIRST to avoid getUpdates conflict
-    try:
-        await context.application.stop()
-    except Exception:
-        pass
-    try:
-        await context.application.shutdown()
-    except Exception:
-        pass
-    await asyncio.sleep(2.0)
-    try:
-        schedule_restart(install_root)
-    except Exception as exc:  # noqa: BLE001
-        # can't notify easily if app stopped — write result file
-        log.error("restart schedule failed: %s", exc)
-    os._exit(0)
+    # NEVER await application.stop() here — deadlocks inside a job/handler.
+    # stop_running() lets run_polling finish, then run_bot calls schedule_restart.
+    request_restart(context.application)
 
 
 async def process_auto_update(context: ContextTypes.DEFAULT_TYPE) -> None:

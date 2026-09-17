@@ -145,6 +145,20 @@ irm https://raw.githubusercontent.com/LiDarcy-dot/WR/cursor/local-assistant-scaf
 3. **GPU 1–6% в простое — норма.** Нагрузка скачет только на время генерации (2–15 сек). Смотри GPU% **во время** «Тест ИИ» или вопроса боту; в LM Studio также смотри VRAM / Activity.  
 4. Если сервер зелёный, а «модель НЕ отвечает» — в LM Studio: Developer → Local Server On, модель в **Loaded**, не только в списке.
 
+## Если бот «перезапускается», но не отвечает на /start
+
+Частая причина до v1.005: зависание на `stop()` внутри обновления — окно открыто, polling мёртв.
+
+1. Закрой окно бота (или через Диспетчер задач заверши `python.exe` с `main.py`).  
+2. В PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/LiDarcy-dot/WR/cursor/local-assistant-scaffold-d6ce/assistant/scripts/force_update.ps1 | iex
+```
+
+Скрипт убьёт зависший процесс, подтянет код и сам откроет `START_BOT.bat`.  
+3. Дождись сообщения «Ассистент на связи» / «Обновление завершено» и версии **v1.005+**.
+
 ## Python 3.14
 
 Ок пробуем. Если `pip install` упадёт — поставь рядом Python **3.12** и в bootstrap используй `py -3.12`.

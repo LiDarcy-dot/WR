@@ -360,31 +360,73 @@ def apply_update(
         )
 
 
-def schedule_restart(install_root: Path) -> None:
-    """Start a new bot process hidden (call AFTER stopping polling)."""
+RESTART_FLAG = "restart_after_stop"
+
+
+def request_restart(application) -> None:
+    """Ask run_polling to exit cleanly, then schedule_restart from run_bot.
+
+    Never await application.stop()/shutdown() from a handler or job — that
+    deadlocks (stop waits for the current handler, which is waiting on stop).
+    """
+    application.bot_data[RESTART_FLAG] = True
+    try:
+        application.stop_running()
+    except Exception as exc:  # noqa: BLE001
+        log.error("stop_running failed: %s", exc)
+
+
+def _restart_log_path(install_root: Path) -> Path:
+    logs = install_root / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    return logs / "restart.log"
+
+
+def schedule_restart(install_root: Path, *, delay_sec: int = 4) -> None:
+    """Spawn a new bot process after a short delay (call after polling stopped)."""
     py = install_root / ".venv" / "Scripts" / "python.exe"
     if not py.exists():
         py = install_root / ".venv" / "bin" / "python"
     if not py.exists():
         py = Path(sys.executable)
     main_py = install_root / "main.py"
+    start_bat = install_root / "START_BOT.bat"
+    log_path = _restart_log_path(install_root)
+    delay = max(2, int(delay_sec))
     env = os.environ.copy()
     env["WR_UPDATED"] = "1"
 
+    try:
+        with log_path.open("a", encoding="utf-8") as f:
+            f.write(
+                f"\n--- schedule_restart {datetime.now(timezone.utc).isoformat()} "
+                f"py={py} delay={delay}s ---\n"
+            )
+    except Exception:
+        pass
+
     if sys.platform == "win32":
         helper = install_root / "_wr_restart.cmd"
-        helper.write_text(
-            "\r\n".join(
-                [
-                    "@echo off",
-                    "timeout /t 2 /nobreak >nul",
-                    f'cd /d "{install_root}"',
-                    f'"{py}" "{main_py}"',
-                ]
-            ),
-            encoding="utf-8",
-        )
-        flags = 0x00000008 | 0x00000200 | 0x08000000
+        # Prefer START_BOT.bat in a new console so the user sees a live window.
+        if start_bat.exists():
+            body = [
+                "@echo off",
+                f"timeout /t {delay} /nobreak >nul",
+                f'cd /d "{install_root}"',
+                f'echo restart at %DATE% %TIME%>> "{log_path}"',
+                f'start "WR Assistant" "{start_bat}"',
+            ]
+        else:
+            body = [
+                "@echo off",
+                f"timeout /t {delay} /nobreak >nul",
+                f'cd /d "{install_root}"',
+                f'echo restart at %DATE% %TIME%>> "{log_path}"',
+                f'start "WR Assistant" cmd /k ""{py}" "{main_py}" ^& pause"',
+            ]
+        helper.write_text("\r\n".join(body) + "\r\n", encoding="utf-8")
+        # Detached helper only — the bot itself opens in a visible window via start.
+        flags = 0x00000008 | 0x00000200 | 0x08000000  # DETACHED|NEW_GROUP|NO_WINDOW
         subprocess.Popen(
             ["cmd.exe", "/c", str(helper)],
             cwd=str(install_root),
@@ -397,13 +439,25 @@ def schedule_restart(install_root: Path) -> None:
         )
         return
 
-    subprocess.Popen(
-        [str(py), str(main_py)],
-        cwd=str(install_root),
-        env=env,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        close_fds=True,
-        start_new_session=True,
-    )
+    def _delayed() -> None:
+        import time
+
+        time.sleep(delay)
+        try:
+            with log_path.open("a", encoding="utf-8") as f:
+                f.write(f"exec {py} {main_py}\n")
+        except Exception:
+            pass
+        subprocess.Popen(
+            [str(py), str(main_py)],
+            cwd=str(install_root),
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+            start_new_session=True,
+        )
+
+    threading = __import__("threading")
+    threading.Thread(target=_delayed, name="wr-restart", daemon=False).start()

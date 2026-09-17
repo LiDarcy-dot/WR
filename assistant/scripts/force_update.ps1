@@ -1,5 +1,6 @@
 #Requires -Version 5.1
-# Force-refresh app code into Desktop\Assistant (keeps .env .venv db)
+# Force-refresh app code into Desktop\Assistant (keeps .env .venv db),
+# kill a stuck bot window, and start a fresh START_BOT.bat.
 $ErrorActionPreference = "Stop"
 $Target = Join-Path $env:USERPROFILE "Desktop\Assistant"
 $Branch = "cursor/local-assistant-scaffold-d6ce"
@@ -8,6 +9,21 @@ $RepoUrl = "https://github.com/LiDarcy-dot/WR.git"
 if (-not (Test-Path (Join-Path $Target "main.py"))) {
     throw "No main.py in $Target"
 }
+
+Write-Host "Stopping stuck bot processes (if any)..." -ForegroundColor Yellow
+Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+    Where-Object {
+        $_.Name -match 'python(\.exe)?' -and
+        $_.CommandLine -and
+        ($_.CommandLine -like "*$Target*" -or $_.CommandLine -like "*main.py*")
+    } |
+    ForEach-Object {
+        try {
+            Write-Host ("  kill PID " + $_.ProcessId)
+            Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+        } catch {}
+    }
+Start-Sleep -Seconds 2
 
 $temp = Join-Path $env:TEMP ("WR-force-" + [guid]::NewGuid().ToString("N"))
 Write-Host "Cloning..." -ForegroundColor Cyan
@@ -44,6 +60,10 @@ $upd = Join-Path $temp "assistant\scripts\UPDATE.cmd"
 if (Test-Path $upd) {
     Copy-Item $upd (Join-Path $Target "UPDATE.cmd") -Force
 }
+$setup = Join-Path $temp "assistant\SETUP_PC.md"
+if (Test-Path $setup) {
+    Copy-Item $setup (Join-Path $Target "SETUP_PC.md") -Force
+}
 
 Remove-Item -LiteralPath $temp -Recurse -Force
 
@@ -61,11 +81,16 @@ Set-Location $Target
 $py = Join-Path $Target ".venv\Scripts\python.exe"
 & $py -m pip install -q -r requirements.txt
 if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
-& $py -c "from app.intent import classify_intent; from app.files.store import ensure_files_schema; print(classify_intent('+').kind)"
+& $py -c "from app.intent import classify_intent; from app.update.apply import request_restart; print(classify_intent('+').kind)"
 if ($LASTEXITCODE -ne 0) { throw "import failed" }
 
-Write-Host "FORCE UPDATE OK" -ForegroundColor Green
-Write-Host "Restart START_BOT.bat"
+$ver = (Get-Content (Join-Path $Target "VERSION") -Raw).Trim()
+Write-Host "FORCE UPDATE OK → $ver" -ForegroundColor Green
+
+$startBat = Join-Path $Target "START_BOT.bat"
+Write-Host "Starting bot..." -ForegroundColor Cyan
+Start-Process -FilePath $startBat -WorkingDirectory $Target
+Write-Host "Новое окно START_BOT.bat открыто. Старое можно закрыть."
 if ($Host.Name -eq "ConsoleHost") {
     try { Read-Host "Press Enter" } catch { }
 }

@@ -40,7 +40,7 @@ from app.memory.formatters import (
 )
 from app.scheduler import process_due_reminders
 from app.storage_layout import ensure_data_layout
-from app.update.apply import schedule_restart
+from app.update.apply import RESTART_FLAG, schedule_restart
 from app.update.job import process_auto_update, report_startup_update, run_update_now
 from app.update.versioning import format_version, read_local_version
 from app.ui import (
@@ -1404,28 +1404,13 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 pass
             return
         if action == "restart":
-            install_root = context.application.bot_data["install_root"]
             await query.edit_message_text(
-                "Перезапускаюсь… Через несколько секунд снова буду на связи."
+                "Перезапускаюсь… Через несколько секунд откроется новое окно.\n"
+                "Если не отвечу — закрой это окно и запусти START_BOT.bat."
             )
-            import asyncio
-            import os
+            from app.update.apply import request_restart
 
-            try:
-                await context.application.stop()
-            except Exception:
-                pass
-            try:
-                await context.application.shutdown()
-            except Exception:
-                pass
-            await asyncio.sleep(2.0)
-            try:
-                schedule_restart(install_root)
-            except Exception as exc:  # noqa: BLE001
-                # app may already be stopped
-                log.error("restart failed: %s", exc)
-            os._exit(0)
+            request_restart(context.application)
             return
 
     if data.startswith("menu:"):
@@ -1745,3 +1730,14 @@ def run_bot(settings: Settings | None = None) -> None:
     app = create_app(settings)
     log.info("Bot starting; data dir=%s", settings.assistant_data_dir)
     app.run_polling(allowed_updates=Update.ALL_TYPES)
+
+    # Clean exit after stop_running() — schedule new process once polling is gone
+    # (avoids getUpdates conflict and the old await-stop() deadlock).
+    if app.bot_data.get(RESTART_FLAG):
+        install_root = app.bot_data.get("install_root")
+        log.info("Polling stopped; scheduling restart from %s", install_root)
+        try:
+            if install_root is not None:
+                schedule_restart(Path(install_root), delay_sec=4)
+        except Exception as exc:  # noqa: BLE001
+            log.error("schedule_restart failed: %s", exc)
