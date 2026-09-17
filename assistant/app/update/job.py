@@ -12,7 +12,6 @@ from app.update.apply import (
     consume_result,
     hard_restart,
     probe_versions,
-    request_restart,
 )
 from app.update.versioning import format_version, read_local_version
 
