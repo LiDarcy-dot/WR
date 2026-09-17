@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -48,6 +48,13 @@ class Settings(BaseSettings):
         default="cursor/local-assistant-scaffold-d6ce",
         alias="AUTO_UPDATE_BRANCH",
     )
+
+    @field_validator("telegram_group_id", "telegram_api_id", mode="before")
+    @classmethod
+    def _empty_int_none(cls, value):  # noqa: ANN001
+        if value is None or value == "":
+            return None
+        return value
 
     @property
     def db_path(self) -> Path:
