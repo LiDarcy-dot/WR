@@ -89,7 +89,7 @@ def test_future_hello_not_due(tmp_path) -> None:
     assert len(due_hello_deletions(conn)) == 1
 
 
-def test_version_1008() -> None:
+def test_version_1009() -> None:
     root = Path(__file__).resolve().parents[1]
-    assert read_local_version(root) == "1.008"
-    assert is_newer("1.008", "1.007")
+    assert read_local_version(root) == "1.009"
+    assert is_newer("1.009", "1.008")

@@ -1693,7 +1693,8 @@ async def _post_init(application: Application) -> None:
             interval=60,
             first=45,
             name="topic_hello_cleanup",
-        )    else:
+        )
+    else:
         log.error(
             "JobQueue недоступен — поставь python-telegram-bot[job-queue]. "
             "Включаю запасной цикл автообновления."
