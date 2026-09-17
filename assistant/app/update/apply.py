@@ -11,6 +11,7 @@ import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote
 
 import httpx
 
@@ -19,7 +20,6 @@ from app.update.versioning import (
     is_newer,
     normalize_version,
     read_local_version,
-    version_file,
 )
 
 log = logging.getLogger(__name__)
@@ -53,6 +53,14 @@ class UpdateOutcome:
     restored: bool = False
 
 
+@dataclass
+class VersionCheck:
+    local: str
+    remote: str
+    newer: bool
+    error: str | None = None
+
+
 def result_path(install_root: Path) -> Path:
     return install_root / ".update_result.json"
 
@@ -79,17 +87,49 @@ def consume_result(install_root: Path) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+def _branch_ref(branch: str) -> str:
+    """Encode branch names that contain slashes (cursor/...)."""
+    return quote(branch, safe="")
+
+
 async def fetch_remote_version(
     *,
     repo: str,
     branch: str,
     timeout: float = 30.0,
 ) -> str:
-    url = f"https://raw.githubusercontent.com/{repo}/{branch}/assistant/VERSION"
+    ref = _branch_ref(branch)
+    urls = (
+        f"https://raw.githubusercontent.com/{repo}/{ref}/assistant/VERSION",
+        f"https://raw.githubusercontent.com/{repo}/{branch}/assistant/VERSION",
+    )
+    last_err: Exception | None = None
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-        r = await client.get(url)
-        r.raise_for_status()
-        return normalize_version(r.text)
+        for url in urls:
+            try:
+                r = await client.get(url)
+                r.raise_for_status()
+                return normalize_version(r.text)
+            except Exception as exc:  # noqa: BLE001
+                last_err = exc
+                continue
+    raise RuntimeError(f"VERSION fetch failed: {last_err}")
+
+
+async def probe_versions(
+    install_root: Path,
+    *,
+    repo: str,
+    branch: str,
+) -> VersionCheck:
+    local = read_local_version(install_root)
+    try:
+        remote = await fetch_remote_version(repo=repo, branch=branch)
+    except Exception as exc:  # noqa: BLE001
+        return VersionCheck(local=local, remote="?", newer=False, error=str(exc)[:300])
+    return VersionCheck(
+        local=local, remote=remote, newer=is_newer(remote, local), error=None
+    )
 
 
 async def check_for_update(
@@ -98,11 +138,22 @@ async def check_for_update(
     repo: str,
     branch: str,
 ) -> UpdatePlan | None:
-    local = read_local_version(install_root)
-    remote = await fetch_remote_version(repo=repo, branch=branch)
-    if not is_newer(remote, local):
+    info = await probe_versions(install_root, repo=repo, branch=branch)
+    log.info(
+        "update check: local=%s remote=%s newer=%s err=%s root=%s",
+        info.local,
+        info.remote,
+        info.newer,
+        info.error,
+        install_root,
+    )
+    if info.error:
+        raise RuntimeError(info.error)
+    if not info.newer:
         return None
-    return UpdatePlan(local=local, remote=remote, branch=branch, repo=repo)
+    return UpdatePlan(
+        local=info.local, remote=info.remote, branch=branch, repo=repo
+    )
 
 
 def _backup_tree(install_root: Path, backups_root: Path, local_ver: str) -> Path:
@@ -115,10 +166,11 @@ def _backup_tree(install_root: Path, backups_root: Path, local_ver: str) -> Path
             continue
         target = dest / name
         if src.is_dir():
+            if target.exists():
+                shutil.rmtree(target)
             shutil.copytree(src, target)
         else:
             shutil.copy2(src, target)
-    # DB snapshot (schema may change; keep recovery copy)
     db = install_root / "db" / "assistant.sqlite3"
     if db.exists():
         (dest / "db").mkdir(parents=True, exist_ok=True)
@@ -157,20 +209,37 @@ def _restore_backup(install_root: Path, backup_dir: Path) -> None:
 
 
 def _download_branch_zip(repo: str, branch: str, dest_zip: Path) -> None:
-    url = f"https://github.com/{repo}/archive/refs/heads/{branch}.zip"
+    ref = _branch_ref(branch)
+    urls = (
+        f"https://codeload.github.com/{repo}/zip/refs/heads/{ref}",
+        f"https://codeload.github.com/{repo}/zip/refs/heads/{branch}",
+        f"https://github.com/{repo}/archive/refs/heads/{ref}.zip",
+        f"https://github.com/{repo}/archive/refs/heads/{branch}.zip",
+    )
+    last_err: Exception | None = None
     with httpx.Client(timeout=180.0, follow_redirects=True) as client:
-        with client.stream("GET", url) as r:
-            r.raise_for_status()
-            with dest_zip.open("wb") as f:
-                for chunk in r.iter_bytes():
-                    f.write(chunk)
+        for url in urls:
+            try:
+                with client.stream("GET", url) as r:
+                    r.raise_for_status()
+                    with dest_zip.open("wb") as f:
+                        for chunk in r.iter_bytes():
+                            f.write(chunk)
+                if dest_zip.stat().st_size > 1000:
+                    return
+            except Exception as exc:  # noqa: BLE001
+                last_err = exc
+                continue
+    raise RuntimeError(f"zip download failed: {last_err}")
 
 
 def _find_assistant_dir(extract_root: Path) -> Path:
-    # github zip: Repo-branch/assistant/...
     for path in extract_root.rglob("VERSION"):
-        if path.parent.name == "assistant" and (path.parent / "app").is_dir():
-            return path.parent
+        parent = path.parent
+        if (parent / "app").is_dir() and (parent / "main.py").exists():
+            return parent
+        if parent.name == "assistant" and (parent / "app").is_dir():
+            return parent
     raise FileNotFoundError("assistant/VERSION not found in downloaded zip")
 
 
@@ -255,7 +324,9 @@ def apply_update(
             ok=True,
             local=plan.local,
             remote=remote_ver,
-            message=f"Обновлено {format_version(plan.local)} → {format_version(remote_ver)}",
+            message=(
+                f"Обновлено {format_version(plan.local)} → {format_version(remote_ver)}"
+            ),
             backup_dir=str(backup_dir),
         )
     except Exception as exc:  # noqa: BLE001
@@ -290,7 +361,7 @@ def apply_update(
 
 
 def schedule_restart(install_root: Path) -> None:
-    """Start a new bot process hidden, then exit current one."""
+    """Start a new bot process hidden (call AFTER stopping polling)."""
     py = install_root / ".venv" / "Scripts" / "python.exe"
     if not py.exists():
         py = install_root / ".venv" / "bin" / "python"
@@ -300,21 +371,39 @@ def schedule_restart(install_root: Path) -> None:
     env = os.environ.copy()
     env["WR_UPDATED"] = "1"
 
-    kwargs: dict = {
-        "cwd": str(install_root),
-        "env": env,
-        "stdin": subprocess.DEVNULL,
-        "stdout": subprocess.DEVNULL,
-        "stderr": subprocess.DEVNULL,
-        "close_fds": True,
-    }
     if sys.platform == "win32":
-        # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
-        kwargs["creationflags"] = 0x00000008 | 0x00000200 | 0x08000000
-        subprocess.Popen([str(py), str(main_py)], **kwargs)
-    else:
-        subprocess.Popen(
-            [str(py), str(main_py)],
-            start_new_session=True,
-            **kwargs,
+        helper = install_root / "_wr_restart.cmd"
+        helper.write_text(
+            "\r\n".join(
+                [
+                    "@echo off",
+                    "timeout /t 2 /nobreak >nul",
+                    f'cd /d "{install_root}"',
+                    f'"{py}" "{main_py}"',
+                ]
+            ),
+            encoding="utf-8",
         )
+        flags = 0x00000008 | 0x00000200 | 0x08000000
+        subprocess.Popen(
+            ["cmd.exe", "/c", str(helper)],
+            cwd=str(install_root),
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+            creationflags=flags,
+        )
+        return
+
+    subprocess.Popen(
+        [str(py), str(main_py)],
+        cwd=str(install_root),
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+        start_new_session=True,
+    )

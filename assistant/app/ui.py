@@ -54,6 +54,7 @@ def control_panel_keyboard(*, paused: bool) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [InlineKeyboardButton("🔄 Обновить статусы", callback_data="panel:refresh")],
+            [InlineKeyboardButton("⬆ Проверить обновление", callback_data="panel:check_update")],
             [pause_btn],
             [InlineKeyboardButton("♻ Перезапуск бота", callback_data="panel:restart")],
             [

@@ -41,7 +41,7 @@ from app.memory.formatters import (
 from app.scheduler import process_due_reminders
 from app.storage_layout import ensure_data_layout
 from app.update.apply import schedule_restart
-from app.update.job import process_auto_update, report_startup_update
+from app.update.job import process_auto_update, report_startup_update, run_update_now
 from app.update.versioning import format_version, read_local_version
 from app.ui import (
     calendar_keyboard,
@@ -1374,24 +1374,41 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 reply_markup=kb,
             )
             return
+        if action == "check_update":
+            await query.edit_message_text("Проверяю обновления…")
+            msg = await run_update_now(context, force_notify=True)
+            try:
+                text, kb = await _build_control_panel(context)
+                await query.edit_message_text(
+                    f"{msg}\n\n{text}",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=kb,
+                )
+            except Exception:
+                pass
+            return
         if action == "restart":
             install_root = context.application.bot_data["install_root"]
             await query.edit_message_text(
                 "Перезапускаюсь… Через несколько секунд снова буду на связи."
             )
-            try:
-                schedule_restart(install_root)
-            except Exception as exc:  # noqa: BLE001
-                await query.edit_message_text(f"Не смог перезапуститься: {exc}")
-                return
             import asyncio
             import os
 
-            await asyncio.sleep(1.0)
             try:
                 await context.application.stop()
             except Exception:
                 pass
+            try:
+                await context.application.shutdown()
+            except Exception:
+                pass
+            await asyncio.sleep(2.0)
+            try:
+                schedule_restart(install_root)
+            except Exception as exc:  # noqa: BLE001
+                # app may already be stopped
+                log.error("restart failed: %s", exc)
             os._exit(0)
             return
 
@@ -1641,7 +1658,7 @@ async def _post_init(application: Application) -> None:
             application.job_queue.run_repeating(
                 process_auto_update,
                 interval=max(30, int(settings.auto_update_interval_sec)),
-                first=20,
+                first=15,
                 name="auto_update",
             )
         application.job_queue.run_once(report_startup_update, when=3, name="startup_ver")

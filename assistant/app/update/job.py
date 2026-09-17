@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 
 from telegram.ext import ContextTypes
 
@@ -9,6 +10,7 @@ from app.update.apply import (
     apply_update,
     check_for_update,
     consume_result,
+    probe_versions,
     schedule_restart,
 )
 from app.update.versioning import format_version, read_local_version
@@ -35,56 +37,160 @@ async def report_startup_update(context: ContextTypes.DEFAULT_TYPE) -> None:
     install_root = context.application.bot_data["install_root"]
     local = read_local_version(install_root)
     result = consume_result(install_root)
-    if not result:
-        # quiet hello with version on first start after enabling updater
-        if context.application.bot_data.get("announce_version_once"):
-            return
-        context.application.bot_data["announce_version_once"] = True
+
+    # Always log updater state
+    log.info(
+        "updater startup: version=%s auto=%s interval=%ss root=%s",
+        local,
+        settings.auto_update,
+        settings.auto_update_interval_sec,
+        install_root,
+    )
+
+    if result:
+        if result.get("ok"):
+            await notify_owner(
+                context,
+                "✅ Обновление завершено.\n"
+                f"{format_version(str(result.get('from')))} → "
+                f"{format_version(str(result.get('to')))}\n"
+                f"Бэкап: {result.get('backup_dir') or '—'}",
+            )
+        else:
+            restored = "да" if result.get("restored") else "нет"
+            await notify_owner(
+                context,
+                "❌ Обновление не удалось.\n"
+                f"Целились на {format_version(str(result.get('to')))}, "
+                f"сейчас {format_version(local)}.\n"
+                f"Recovery из бэкапа: {restored}\n"
+                f"{result.get('error') or result.get('message') or ''}".strip(),
+            )
+        return
+
+    if context.application.bot_data.get("announce_version_once"):
+        return
+    context.application.bot_data["announce_version_once"] = True
+    au = (
+        f"Автообновление каждые {settings.auto_update_interval_sec}с."
+        if settings.auto_update
+        else "Автообновление выключено (AUTO_UPDATE=0)."
+    )
+    await notify_owner(
+        context,
+        f"Ассистент на связи. Версия {format_version(local)}. {au}",
+    )
+
+
+async def run_update_now(context: ContextTypes.DEFAULT_TYPE, *, force_notify: bool = True) -> str:
+    """Manual/panel-triggered update check. Returns status text."""
+    settings = context.application.bot_data["settings"]
+    install_root = context.application.bot_data["install_root"]
+    info = await probe_versions(
+        install_root,
+        repo=settings.auto_update_repo,
+        branch=settings.auto_update_branch,
+    )
+    if info.error:
+        msg = (
+            f"⚠️ Проверка обновлений не вышла.\n"
+            f"Локально: {format_version(info.local)}\n"
+            f"Ошибка: {info.error}"
+        )
+        if force_notify:
+            await notify_owner(context, msg)
+        return msg
+
+    if not info.newer:
+        msg = (
+            f"Актуальная версия.\n"
+            f"Локально: {format_version(info.local)}\n"
+            f"В репо: {format_version(info.remote)}"
+        )
+        if force_notify:
+            await notify_owner(context, msg)
+        return msg
+
+    # newer available — reuse process_auto_update path
+    await notify_owner(
+        context,
+        "🔄 Нашёл новую версию.\n"
+        f"{format_version(info.local)} → {format_version(info.remote)}\n"
+        "Делаю бэкап и обновляюсь…",
+    )
+    await _apply_and_restart(context, info.local, info.remote)
+    return f"Обновление {format_version(info.local)} → {format_version(info.remote)}"
+
+
+async def _apply_and_restart(
+    context: ContextTypes.DEFAULT_TYPE, local: str, remote: str
+) -> None:
+    settings = context.application.bot_data["settings"]
+    install_root = context.application.bot_data["install_root"]
+    from app.update.apply import UpdatePlan
+
+    plan = UpdatePlan(
+        local=local,
+        remote=remote,
+        branch=settings.auto_update_branch,
+        repo=settings.auto_update_repo,
+    )
+    outcome = await asyncio.to_thread(
+        apply_update,
+        install_root,
+        plan,
+        backups_root=settings.backups_dir,
+    )
+    if not outcome.ok:
         await notify_owner(
             context,
-            f"Ассистент на связи. Версия {format_version(local)}. "
-            f"Автообновление каждые {settings.auto_update_interval_sec}с.",
+            "❌ Обновление сорвалось.\n"
+            f"{outcome.message}\n"
+            f"Recovery: {'восстановил бэкап' if outcome.restored else 'не удалось'}\n"
+            f"Бэкап: {outcome.backup_dir or '—'}",
         )
         return
 
-    if result.get("ok"):
-        await notify_owner(
-            context,
-            "✅ Обновление завершено.\n"
-            f"{format_version(str(result.get('from')))} → "
-            f"{format_version(str(result.get('to')))}\n"
-            f"Бэкап: {result.get('backup_dir') or '—'}",
-        )
-    else:
-        restored = "да" if result.get("restored") else "нет"
-        await notify_owner(
-            context,
-            "❌ Обновление не удалось.\n"
-            f"Целились на {format_version(str(result.get('to')))}, "
-            f"сейчас {format_version(local)}.\n"
-            f"Recovery из бэкапа: {restored}\n"
-            f"{result.get('error') or result.get('message') or ''}".strip(),
-        )
+    await notify_owner(
+        context,
+        "📦 Файлы обновлены, останавливаю polling и перезапускаюсь…\n"
+        f"{outcome.message}\n"
+        f"Бэкап: {outcome.backup_dir}",
+    )
+    # Stop Telegram polling FIRST to avoid getUpdates conflict
+    try:
+        await context.application.stop()
+    except Exception:
+        pass
+    try:
+        await context.application.shutdown()
+    except Exception:
+        pass
+    await asyncio.sleep(2.0)
+    try:
+        schedule_restart(install_root)
+    except Exception as exc:  # noqa: BLE001
+        # can't notify easily if app stopped — write result file
+        log.error("restart schedule failed: %s", exc)
+    os._exit(0)
 
 
 async def process_auto_update(context: ContextTypes.DEFAULT_TYPE) -> None:
     settings = context.application.bot_data["settings"]
     if not settings.auto_update:
         return
-    install_root = context.application.bot_data["install_root"]
     if _update_lock.locked():
         return
 
     async with _update_lock:
         try:
             plan = await check_for_update(
-                install_root,
+                context.application.bot_data["install_root"],
                 repo=settings.auto_update_repo,
                 branch=settings.auto_update_branch,
             )
         except Exception as exc:  # noqa: BLE001
             log.warning("version check failed: %s", exc)
-            # don't spam every 2 min — only log; optional soft notify once
             fail_key = "update_check_fail_notified"
             if not context.application.bot_data.get(fail_key):
                 context.application.bot_data[fail_key] = True
@@ -104,54 +210,4 @@ async def process_auto_update(context: ContextTypes.DEFAULT_TYPE) -> None:
             f"{format_version(plan.local)} → {format_version(plan.remote)}\n"
             "Делаю бэкап и обновляюсь без вопросов…",
         )
-
-        # apply is sync/blocking — run in thread
-        outcome = await asyncio.to_thread(
-            apply_update,
-            install_root,
-            plan,
-            backups_root=settings.backups_dir,
-        )
-
-        if outcome.ok:
-            await notify_owner(
-                context,
-                "📦 Файлы обновлены, перезапускаюсь…\n"
-                f"{outcome.message}\n"
-                f"Бэкап: {outcome.backup_dir}",
-            )
-            try:
-                schedule_restart(install_root)
-            except Exception as exc:  # noqa: BLE001
-                await notify_owner(
-                    context,
-                    f"Код обновлён, но автоперезапуск не вышел: {exc}\n"
-                    "Перезапусти START_BOT.bat вручную.",
-                )
-                return
-            await asyncio.sleep(1.5)
-            try:
-                await context.application.stop()
-            except Exception:
-                pass
-            try:
-                await context.application.shutdown()
-            except Exception:
-                pass
-            import os
-
-            os._exit(0)
-            return
-
-        msg = (
-            "❌ Обновление сорвалось.\n"
-            f"{outcome.message}\n"
-            f"Recovery: {'восстановил бэкап' if outcome.restored else 'не удалось восстановить'}\n"
-            f"Бэкап: {outcome.backup_dir or '—'}"
-        )
-        await notify_owner(context, msg)
-
-
-async def _stop_soon(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Unused helper kept for clarity; restart path exits inline."""
-    await asyncio.sleep(0)
+        await _apply_and_restart(context, plan.local, plan.remote)
