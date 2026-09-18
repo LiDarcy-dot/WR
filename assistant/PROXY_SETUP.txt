@@ -4,39 +4,31 @@
 Цель: боты ходят в Telegram через Нидерланды, а браузер
 (госуслуги / банки / ЖКХ) — напрямую из РФ, без VPN на весь ПК.
 
-1) На VPS (SSH под root), один раз:
+С v1.015 ассистент сам пишет TELEGRAM_PROXY в .env:
+  - при START_BOT.bat
+  - при UPDATE.cmd / force_update
+  - при каждом запуске main.py (из proxy.default)
 
-   # скопируй файл scripts/setup_tg_socks_vps.sh на сервер и:
-   bash setup_tg_socks_vps.sh
+Тебе НЕ нужно открывать блокнот и вставлять строку вручную.
+Достаточно UPDATE.cmd (или перезапуск START_BOT после обновления).
+Amnezia full-tunnel на Windows лучше выключить.
 
-   Скрипт выведет строку вида:
-   TELEGRAM_PROXY=socks5://tgproxy:PASSWORD@IP:1080
+1) На VPS (уже сделано): microsocks :1080, юзер tgproxy.
+   Скрипт: scripts/setup_tg_socks_vps.sh
 
-   Запомни её — одна на оба бота.
+2) Файл proxy.default в папке Assistant — URL SOCKS.
+   Менять прокси = править proxy.default, потом START_BOT.
 
-2) Ассистент (Desktop\Assistant\.env) — добавь строку:
+3) Второй бот — тот же URL из proxy.default / .env TELEGRAM_PROXY
+   (см. CURSOR_PROMPT_SECOND_BOT_PROXY.txt).
 
-   TELEGRAM_PROXY=socks5://tgproxy:PASSWORD@IP:1080
-
-   Полный Amnezia-туннель на Windows лучше выключить
-   (или не гонять через него браузер).
-
-3) Второй бот — тот же TELEGRAM_PROXY в его конфиге/.env
-   (или proxy_url / socks в его библиотеке).
-
-   python-telegram-bot:
-     Application.builder().token(...).proxy(url).get_updates_proxy(url)
-
-   aiogram 3:
-     session = AiohttpSession(proxy=url)
-
-4) Перезапуск ассистента: START_BOT.bat
-   В логе должно быть: Telegram API via proxy: socks5://tgproxy:***@IP:1080
-   /start должен ответить.
+4) В логе должно быть:
+   Telegram API via proxy: socks5h://tgproxy:***@IP:1080
+   Proxy probe api.telegram.org -> HTTP 302
 
 5) Проверка split:
    - бот отвечает в Telegram
-   - в обычном Chrome 2ip.ru = НЕ голландский IP
+   - в Chrome 2ip.ru = НЕ голландский IP
    - госуслуги открываются
 
 Браузер ассистента (позже) всегда direct — прокси только для Telegram API.

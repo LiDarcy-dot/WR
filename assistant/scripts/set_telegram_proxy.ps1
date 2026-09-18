@@ -1,16 +1,29 @@
 #Requires -Version 5.1
-# Add/update TELEGRAM_PROXY in Desktop\Assistant\.env
+# Add/update TELEGRAM_PROXY in Assistant\.env
 # Usage:
 #   .\scripts\set_telegram_proxy.ps1 "socks5://tgproxy:PASS@31.15.16.97:1080"
+# Prefer: START_BOT / UPDATE — ensure_telegram_proxy.ps1 does this from proxy.default
 param(
     [Parameter(Mandatory = $false)]
     [string]$Proxy = $env:TELEGRAM_PROXY
 )
 
 $ErrorActionPreference = "Stop"
-$Target = Join-Path $env:USERPROFILE "Desktop\Assistant"
+$Target = Split-Path -Parent $PSScriptRoot
+if (-not (Test-Path -LiteralPath (Join-Path $Target "main.py"))) {
+    $Target = Join-Path $env:USERPROFILE "Desktop\Assistant"
+}
 $EnvFile = Join-Path $Target ".env"
 
+if (-not $Proxy) {
+    $DefaultFile = Join-Path $Target "proxy.default"
+    if (Test-Path -LiteralPath $DefaultFile) {
+        foreach ($line in (Get-Content -LiteralPath $DefaultFile -Encoding UTF8)) {
+            $t = $line.Trim()
+            if ($t -and -not $t.StartsWith("#")) { $Proxy = $t; break }
+        }
+    }
+}
 if (-not $Proxy) {
     throw 'Pass proxy URL, example: .\scripts\set_telegram_proxy.ps1 "socks5://user:pass@host:1080"'
 }

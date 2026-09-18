@@ -78,14 +78,23 @@ $cursorPrompt = Join-Path $temp "assistant\CURSOR_PROMPT_SECOND_BOT_PROXY.txt"
 if (Test-Path $cursorPrompt) {
     Copy-Item $cursorPrompt (Join-Path $Target "CURSOR_PROMPT_SECOND_BOT_PROXY.txt") -Force
 }
-$setProxy = Join-Path $temp "assistant\scripts\set_telegram_proxy.ps1"
-# scripts folder copy already covers set_telegram_proxy.ps1 when whole scripts/ is replaced
+$proxyDefault = Join-Path $temp "assistant\proxy.default"
+if (Test-Path $proxyDefault) {
+    Copy-Item $proxyDefault (Join-Path $Target "proxy.default") -Force
+}
 $setup = Join-Path $temp "assistant\SETUP_PC.md"
 if (Test-Path $setup) {
     Copy-Item $setup (Join-Path $Target "SETUP_PC.md") -Force
 }
 
 Remove-Item -LiteralPath $temp -Recurse -Force
+
+# Write TELEGRAM_PROXY into .env automatically (no notepad)
+$ensureProxy = Join-Path $Target "scripts\ensure_telegram_proxy.ps1"
+if (Test-Path $ensureProxy) {
+    Write-Host "Wiring TELEGRAM_PROXY into .env..." -ForegroundColor Cyan
+    powershell -NoProfile -ExecutionPolicy Bypass -File $ensureProxy
+}
 
 $intent = Join-Path $dstApp "intent.py"
 $memory = Join-Path $dstApp "memory\formatters.py"

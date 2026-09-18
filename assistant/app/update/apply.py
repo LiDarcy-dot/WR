@@ -35,6 +35,7 @@ COPY_NAMES = (
     "UPDATE_NOW.txt",
     "PROXY_SETUP.txt",
     "CURSOR_PROMPT_SECOND_BOT_PROXY.txt",
+    "proxy.default",
     "scripts",
     "SETUP_PC.md",
 )

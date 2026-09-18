@@ -1797,13 +1797,16 @@ def run_bot(settings: Settings | None = None) -> None:
     import threading
 
     from app.config import load_settings
+    from app.proxy_ensure import ensure_telegram_proxy, install_root_from_here
     from app.web.panel import run_web
 
-    settings = settings or load_settings()
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    # Before load_settings: pin TELEGRAM_PROXY from proxy.default into .env
+    ensure_telegram_proxy(install_root_from_here())
+    settings = settings or load_settings()
 
     web_port = getattr(settings, "web_port", 8765)
     t = threading.Thread(

@@ -19,6 +19,12 @@ if exist "%~dp0.wr_stop" (
 )
 
 echo [%date% %time%] pip/check + start >> "logs\watchdog.log"
+
+REM Auto-wire Telegram SOCKS into .env (no notepad). Safe to run every loop.
+if exist "%~dp0scripts\ensure_telegram_proxy.ps1" (
+  powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\ensure_telegram_proxy.ps1" >> "logs\watchdog.log" 2>&1
+)
+
 call .venv\Scripts\python.exe -m pip install -q -r requirements.txt
 if errorlevel 1 (
   echo [%date% %time%] pip failed >> "logs\watchdog.log"

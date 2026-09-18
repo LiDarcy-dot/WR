@@ -4,6 +4,8 @@
 Вариант A — двойной клик:
   Desktop\Assistant\UPDATE.cmd
 
+  (с v1.015 сам пропишет TELEGRAM_PROXY в .env и запустит бота)
+
 Вариант B — вставь ВЕСЬ блок в PowerShell (только git):
 
 $ErrorActionPreference = "Stop"
@@ -23,10 +25,12 @@ Copy-Item (Join-Path $src "requirements.txt") (Join-Path $Target "requirements.t
 Copy-Item (Join-Path $src "VERSION") (Join-Path $Target "VERSION") -Force
 Copy-Item (Join-Path $src "START_BOT.bat") (Join-Path $Target "START_BOT.bat") -Force
 Copy-Item (Join-Path $src "UPDATE.cmd") (Join-Path $Target "UPDATE.cmd") -Force
+Copy-Item (Join-Path $src "proxy.default") (Join-Path $Target "proxy.default") -Force -ErrorAction SilentlyContinue
 if (Test-Path (Join-Path $Target "scripts")) { Remove-Item (Join-Path $Target "scripts") -Recurse -Force }
 Copy-Item (Join-Path $src "scripts") (Join-Path $Target "scripts") -Recurse -Force
 Remove-Item $temp -Recurse -Force
 Set-Location $Target
 & .\.venv\Scripts\python.exe -m pip install -q -r requirements.txt
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\ensure_telegram_proxy.ps1
 Write-Host ("OK version " + (Get-Content .\VERSION -Raw).Trim()) -ForegroundColor Green
 Start-Process -FilePath (Join-Path $Target "START_BOT.bat") -WorkingDirectory $Target
