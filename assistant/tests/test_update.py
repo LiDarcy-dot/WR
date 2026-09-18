@@ -79,10 +79,27 @@ def test_schedule_restart_writes_helper(tmp_path: Path) -> None:
     assert (tmp_path / "logs" / "restart.log").exists()
 
 
-def test_version_is_1009() -> None:
+def test_version_is_1010() -> None:
     root = Path(__file__).resolve().parents[1]
-    assert read_local_version(root) == "1.009"
-    assert is_newer("1.009", "1.008")
+    assert read_local_version(root) == "1.010"
+    assert is_newer("1.010", "1.009")
+
+
+def test_hard_restart_under_watchdog_exits_only(monkeypatch, tmp_path: Path) -> None:
+    from app.update import apply as apply_mod
+
+    scheduled: list[Path] = []
+    exits: list[int] = []
+
+    monkeypatch.setenv("WR_WATCHDOG", "1")
+    monkeypatch.setattr(
+        apply_mod, "schedule_restart", lambda root, delay_sec=5: scheduled.append(root)
+    )
+    monkeypatch.setattr(apply_mod.os, "_exit", lambda code: exits.append(code))
+
+    apply_mod.hard_restart(tmp_path, delay_sec=3)
+    assert scheduled == []
+    assert exits == [0]
 
 
 def test_request_restart_schedules_then_exits(monkeypatch, tmp_path: Path) -> None:

@@ -402,26 +402,45 @@ def apply_update(
         )
 
 
-RESTART_FLAG = "restart_after_stop"  # legacy; hard_restart no longer needs it
+RESTART_FLAG = "restart_after_stop"  # legacy
+
+
+def _under_watchdog() -> bool:
+    return os.environ.get("WR_WATCHDOG", "").strip() in {"1", "true", "yes", "YES"}
 
 
 def request_restart(application) -> None:
-    """Schedule a new bot window, then kill this process hard.
-
-    Never await application.stop()/shutdown()/stop_running() from a handler —
-    that deadlocks. os._exit frees the Telegram getUpdates lock immediately.
-    """
+    """Exit so START_BOT watchdog can relaunch, or spawn helper if no watchdog."""
     install_root = application.bot_data.get("install_root")
-    if install_root is not None:
+    if install_root is not None and not _under_watchdog():
         try:
             schedule_restart(Path(install_root), delay_sec=5)
         except Exception as exc:  # noqa: BLE001
             log.error("schedule_restart failed: %s", exc)
+    elif install_root is not None:
+        try:
+            with _restart_log_path(Path(install_root)).open("a", encoding="utf-8") as f:
+                f.write(
+                    f"\n--- watchdog exit {datetime.now(timezone.utc).isoformat()} ---\n"
+                )
+        except Exception:
+            pass
     os._exit(0)
 
 
 def hard_restart(install_root: Path, *, delay_sec: int = 5) -> None:
-    """Spawn restart helper, then terminate this process immediately."""
+    """Prefer parent START_BOT watchdog; otherwise spawn a detached restarter."""
+    if _under_watchdog():
+        try:
+            with _restart_log_path(install_root).open("a", encoding="utf-8") as f:
+                f.write(
+                    f"\n--- hard_restart via watchdog "
+                    f"{datetime.now(timezone.utc).isoformat()} ---\n"
+                )
+        except Exception:
+            pass
+        # Let START_BOT.bat :loop bring us back with new code.
+        os._exit(0)
     try:
         schedule_restart(install_root, delay_sec=delay_sec)
     except Exception as exc:  # noqa: BLE001
@@ -484,9 +503,11 @@ def schedule_restart(install_root: Path, *, delay_sec: int = 5) -> None:
                     "  Stop-Process -Id $p.ProcessId -Force",
                     "}",
                     "Start-Sleep -Seconds 2",
+                    f"if (Test-Path -LiteralPath '{ps_root}\\.wr_stop') {{ Remove-Item -LiteralPath '{ps_root}\\.wr_stop' -Force }}",
                     f"if ({use_bat} -eq 1) {{",
                     f"  Start-Process -FilePath '{start_bat_s}' -WorkingDirectory '{ps_root}'",
                     "} else {",
+                    f"  $env:WR_WATCHDOG = '1'",
                     f"  Start-Process -FilePath '{py_s}' -ArgumentList '\"{main_s}\"' "
                     f"-WorkingDirectory '{ps_root}'",
                     "}",

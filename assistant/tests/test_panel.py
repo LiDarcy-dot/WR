@@ -66,5 +66,5 @@ def test_control_panel_render() -> None:
 def test_version_bump_file() -> None:
     root = Path(__file__).resolve().parents[1]
     ver = read_local_version(root)
-    assert ver == "1.009"
-    assert is_newer(ver, "1.008")
+    assert ver == "1.010"
+    assert is_newer(ver, "1.009")

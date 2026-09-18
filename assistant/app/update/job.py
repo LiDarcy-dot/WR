@@ -193,12 +193,11 @@ async def _apply_and_restart(
 
     await notify_owner(
         context,
-        "📦 Файлы обновлены. Через ~5 сек убью старый процесс и "
-        "открою новое окно бота…\n"
+        "📦 Файлы обновлены. Перезапускаюсь через watchdog "
+        "(~5 сек, окно START_BOT можно не трогать)…\n"
         f"{outcome.message}\n"
         f"Бэкап: {outcome.backup_dir}\n"
-        "Если через ~20 сек не отвечу — закрой окна и запусти "
-        "UPDATE.cmd (двойной клик) или блок из UPDATE_NOW.txt.",
+        "Если через ~20 сек не отвечу — UPDATE.cmd, потом START_BOT.bat.",
     )
     # schedule helper first, then hard-kill self (never await application.stop)
     hard_restart(install_root, delay_sec=5)

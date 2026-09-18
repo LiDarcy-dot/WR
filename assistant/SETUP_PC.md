@@ -159,6 +159,19 @@ git clone --branch cursor/local-assistant-scaffold-d6ce --depth 1 https://github
 
 Панель → «Проверить обновление». В `.env`: `AUTO_UPDATE=1`.
 
+## Если бот выключился и не отвечает
+
+`START_BOT.bat` с **v1.010** — watchdog: после выхода/краша сам поднимает бота снова.  
+Окно можно не закрывать. Полная остановка: файл `.wr_stop` в папке Assistant или закрыть окно.
+
+Сейчас бот мёртв — один раз вручную:
+
+1. `UPDATE.cmd` (или git-блок из `UPDATE_NOW.txt`)  
+2. `START_BOT.bat`  
+3. Проверка: `/start` → версия **v1.010+**
+
+Лог перезапусков: `Desktop\Assistant\logs\watchdog.log`
+
 ## Темы в группе-форуме
 
 1. Добавь бота в группу **с темами**, лучше админом.  

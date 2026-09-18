@@ -24,6 +24,8 @@ Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
         } catch {}
     }
 Start-Sleep -Seconds 2
+$stopFlag = Join-Path $Target ".wr_stop"
+if (Test-Path $stopFlag) { Remove-Item -LiteralPath $stopFlag -Force }
 
 $temp = Join-Path $env:TEMP ("WR-force-" + [guid]::NewGuid().ToString("N"))
 Write-Host "Cloning..." -ForegroundColor Cyan
