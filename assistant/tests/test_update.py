@@ -81,8 +81,8 @@ def test_schedule_restart_writes_helper(tmp_path: Path) -> None:
 
 def test_version_is_1010() -> None:
     root = Path(__file__).resolve().parents[1]
-    assert read_local_version(root) == "1.013"
-    assert is_newer("1.013", "1.012")
+    assert read_local_version(root) == "1.014"
+    assert is_newer("1.014", "1.013")
 
 
 def test_normalize_proxy_to_socks5h() -> None:
