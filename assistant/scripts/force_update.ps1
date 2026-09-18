@@ -74,6 +74,12 @@ $proxySetup = Join-Path $temp "assistant\PROXY_SETUP.txt"
 if (Test-Path $proxySetup) {
     Copy-Item $proxySetup (Join-Path $Target "PROXY_SETUP.txt") -Force
 }
+$cursorPrompt = Join-Path $temp "assistant\CURSOR_PROMPT_SECOND_BOT_PROXY.txt"
+if (Test-Path $cursorPrompt) {
+    Copy-Item $cursorPrompt (Join-Path $Target "CURSOR_PROMPT_SECOND_BOT_PROXY.txt") -Force
+}
+$setProxy = Join-Path $temp "assistant\scripts\set_telegram_proxy.ps1"
+# scripts folder copy already covers set_telegram_proxy.ps1 when whole scripts/ is replaced
 $setup = Join-Path $temp "assistant\SETUP_PC.md"
 if (Test-Path $setup) {
     Copy-Item $setup (Join-Path $Target "SETUP_PC.md") -Force

@@ -81,8 +81,8 @@ def test_schedule_restart_writes_helper(tmp_path: Path) -> None:
 
 def test_version_is_1010() -> None:
     root = Path(__file__).resolve().parents[1]
-    assert read_local_version(root) == "1.011"
-    assert is_newer("1.011", "1.010")
+    assert read_local_version(root) == "1.012"
+    assert is_newer("1.012", "1.011")
 
 
 def test_hard_restart_under_watchdog_exits_only(monkeypatch, tmp_path: Path) -> None:
