@@ -1,0 +1,11 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.env
+*.sqlite3
+.DS_Store
+
+# Local data (keep on your PC disk, not in git)
+/assistant_data/

@@ -1,0 +1,13 @@
+# One-click install — ONLY git, never irm/raw.githubusercontent
+#
+# PowerShell on your PC:
+#
+#   Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force
+#   $t = Join-Path $env:TEMP ("WR-inst-" + [guid]::NewGuid().ToString("N"))
+#   git clone --branch cursor/local-assistant-scaffold-d6ce --depth 1 https://github.com/LiDarcy-dot/WR.git $t
+#   & "$t\assistant\scripts\install_desktop.ps1" -BotToken "YOUR_TOKEN" -OwnerId YOUR_TELEGRAM_ID
+#
+# Everything lands in Desktop\Assistant including START_BOT.bat and UPDATE.cmd
+#
+# Later updates: double-click Desktop\Assistant\UPDATE.cmd
+# Or see UPDATE_NOW.txt (paste block, git only).

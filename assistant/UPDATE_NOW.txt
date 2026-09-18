@@ -1,0 +1,32 @@
+Обновление бота БЕЗ irm / raw.githubusercontent.com
+=====================================================
+
+Вариант A — двойной клик:
+  Desktop\Assistant\UPDATE.cmd
+
+Вариант B — вставь ВЕСЬ блок в PowerShell (только git):
+
+$ErrorActionPreference = "Stop"
+$Target = Join-Path $env:USERPROFILE "Desktop\Assistant"
+$Branch = "cursor/local-assistant-scaffold-d6ce"
+$Repo = "https://github.com/LiDarcy-dot/WR.git"
+$temp = Join-Path $env:TEMP ("WR-force-" + [guid]::NewGuid().ToString("N"))
+Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+  Where-Object { $_.Name -match 'python' -and $_.CommandLine -like "*$Target*" } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+Start-Sleep -Seconds 2
+git clone --branch $Branch --depth 1 $Repo $temp
+$src = Join-Path $temp "assistant"
+Copy-Item (Join-Path $src "app") (Join-Path $Target "app") -Recurse -Force
+Copy-Item (Join-Path $src "main.py") (Join-Path $Target "main.py") -Force
+Copy-Item (Join-Path $src "requirements.txt") (Join-Path $Target "requirements.txt") -Force
+Copy-Item (Join-Path $src "VERSION") (Join-Path $Target "VERSION") -Force
+Copy-Item (Join-Path $src "START_BOT.bat") (Join-Path $Target "START_BOT.bat") -Force
+Copy-Item (Join-Path $src "UPDATE.cmd") (Join-Path $Target "UPDATE.cmd") -Force
+if (Test-Path (Join-Path $Target "scripts")) { Remove-Item (Join-Path $Target "scripts") -Recurse -Force }
+Copy-Item (Join-Path $src "scripts") (Join-Path $Target "scripts") -Recurse -Force
+Remove-Item $temp -Recurse -Force
+Set-Location $Target
+& .\.venv\Scripts\python.exe -m pip install -q -r requirements.txt
+Write-Host ("OK version " + (Get-Content .\VERSION -Raw).Trim()) -ForegroundColor Green
+Start-Process -FilePath (Join-Path $Target "START_BOT.bat") -WorkingDirectory $Target

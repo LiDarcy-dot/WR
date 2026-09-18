@@ -1,0 +1,80 @@
+:root {
+  --bg: #12141a;
+  --panel: #1a1d26;
+  --text: #e8eaef;
+  --muted: #8b93a7;
+  --line: #2a3140;
+  --accent: #c4a574;
+  --has: #3d4a3a;
+  --today: #3a455c;
+  --font: "Segoe UI", "IBM Plex Sans", system-ui, sans-serif;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: radial-gradient(1200px 600px at 10% -10%, #1c2230, var(--bg));
+  color: var(--text);
+  font: 15px/1.45 var(--font);
+}
+main {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 28px 18px 64px;
+}
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 28px;
+}
+h1 { font-size: 22px; font-weight: 600; margin: 0; letter-spacing: 0.02em; }
+h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--muted); margin: 0; }
+.muted { color: var(--muted); }
+a { color: var(--accent); text-decoration: none; }
+.row { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 12px; }
+section { margin-bottom: 32px; }
+button, .nav a {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  color: var(--text);
+  border-radius: 10px;
+  padding: 8px 14px;
+  cursor: pointer;
+}
+.week {
+  display: grid;
+  gap: 8px;
+}
+.day {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 14px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  color: var(--text);
+}
+.day.has { border-color: #4a5d45; background: linear-gradient(90deg, var(--has), var(--panel)); }
+.day span { color: var(--muted); text-align: right; }
+ul { list-style: none; padding: 0; margin: 0; }
+li { padding: 10px 0; border-bottom: 1px solid var(--line); }
+.dow, .grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 6px;
+}
+.dow { margin-bottom: 8px; color: var(--muted); font-size: 12px; text-align: center; }
+.cell {
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--text);
+}
+.cell.has { outline: 1px solid var(--accent); color: var(--accent); }
+.cell.today { background: var(--today); }
+.cell.empty { background: transparent; border-color: transparent; }

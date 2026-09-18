@@ -1,0 +1,1 @@
+"""WR local assistant package."""
