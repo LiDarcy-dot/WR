@@ -95,9 +95,17 @@ def test_hard_restart_under_watchdog_exits_only(monkeypatch, tmp_path: Path) -> 
     monkeypatch.setattr(
         apply_mod, "schedule_restart", lambda root, delay_sec=5: scheduled.append(root)
     )
-    monkeypatch.setattr(apply_mod.os, "_exit", lambda code: exits.append(code))
 
-    apply_mod.hard_restart(tmp_path, delay_sec=3)
+    def fake_exit(code: int) -> None:
+        exits.append(code)
+        raise SystemExit(code)
+
+    monkeypatch.setattr(apply_mod.os, "_exit", fake_exit)
+
+    try:
+        apply_mod.hard_restart(tmp_path, delay_sec=3)
+    except SystemExit as exc:
+        assert int(exc.code) == 0
     assert scheduled == []
     assert exits == [0]
 
