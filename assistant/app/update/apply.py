@@ -33,6 +33,7 @@ COPY_NAMES = (
     "START_BOT.bat",
     "UPDATE.cmd",
     "UPDATE_NOW.txt",
+    "PROXY_SETUP.txt",
     "scripts",
     "SETUP_PC.md",
 )

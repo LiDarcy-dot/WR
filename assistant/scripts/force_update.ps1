@@ -70,6 +70,10 @@ $updNow = Join-Path $temp "assistant\UPDATE_NOW.txt"
 if (Test-Path $updNow) {
     Copy-Item $updNow (Join-Path $Target "UPDATE_NOW.txt") -Force
 }
+$proxySetup = Join-Path $temp "assistant\PROXY_SETUP.txt"
+if (Test-Path $proxySetup) {
+    Copy-Item $proxySetup (Join-Path $Target "PROXY_SETUP.txt") -Force
+}
 $setup = Join-Path $temp "assistant\SETUP_PC.md"
 if (Test-Path $setup) {
     Copy-Item $setup (Join-Path $Target "SETUP_PC.md") -Force

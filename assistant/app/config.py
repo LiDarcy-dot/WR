@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     telegram_bot_token: str = Field(alias="TELEGRAM_BOT_TOKEN")
     telegram_owner_id: int = Field(alias="TELEGRAM_OWNER_ID")
     telegram_group_id: int | None = Field(default=None, alias="TELEGRAM_GROUP_ID")
+    # SOCKS5/HTTP proxy for Telegram API only (browser stays direct).
+    # Example: socks5://user:pass@YOUR_NL_VPS_IP:1080
+    telegram_proxy: str = Field(default="", alias="TELEGRAM_PROXY")
     # Optional MTProto credentials to list forum topics (defaults = Telegram Android)
     telegram_api_id: int | None = Field(default=None, alias="TELEGRAM_API_ID")
     telegram_api_hash: str = Field(default="", alias="TELEGRAM_API_HASH")

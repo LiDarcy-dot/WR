@@ -34,6 +34,7 @@ class SystemStatus:
     remote_version: str = "?"
     update_available: bool = False
     update_check_error: str | None = None
+    telegram_proxy: str = ""
 
 
 async def probe_internet() -> NetProbe:
@@ -75,6 +76,7 @@ async def collect_status(
     install_root: Path | None = None,
     update_repo: str = "LiDarcy-dot/WR",
     update_branch: str = "cursor/local-assistant-scaffold-d6ce",
+    telegram_proxy: str = "",
 ) -> SystemStatus:
     net = await probe_internet()
     studio = await fetch_studio_snapshot(router, probe_inference=probe_inference)
@@ -107,4 +109,5 @@ async def collect_status(
         remote_version=remote_version,
         update_available=update_available,
         update_check_error=update_check_error,
+        telegram_proxy=telegram_proxy or "",
     )

@@ -91,5 +91,5 @@ def test_future_hello_not_due(tmp_path) -> None:
 
 def test_version_1009() -> None:
     root = Path(__file__).resolve().parents[1]
-    assert read_local_version(root) == "1.010"
-    assert is_newer("1.010", "1.009")
+    assert read_local_version(root) == "1.011"
+    assert is_newer("1.011", "1.010")

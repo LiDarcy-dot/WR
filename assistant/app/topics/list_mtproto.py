@@ -16,6 +16,7 @@ async def list_forum_topics_mtproto(
     chat_id: int,
     api_id: int | None = None,
     api_hash: str | None = None,
+    proxy: str | None = None,
 ) -> list[dict[str, Any]]:
     """Try to list forum topics via Telethon (MTProto).
 
@@ -35,7 +36,13 @@ async def list_forum_topics_mtproto(
     api_hash = (api_hash or _DEFAULT_API_HASH).strip()
     out: list[dict[str, Any]] = []
 
-    client = TelegramClient(StringSession(), api_id, api_hash)
+    proxy_tuple = _telethon_proxy(proxy)
+    client = TelegramClient(
+        StringSession(),
+        api_id,
+        api_hash,
+        proxy=proxy_tuple,
+    )
     try:
         await client.start(bot_token=bot_token)
         peer = await client.get_input_entity(chat_id)
@@ -60,7 +67,6 @@ async def list_forum_topics_mtproto(
                 if isinstance(t, ForumTopicDeleted):
                     continue
                 if not isinstance(t, TlForumTopic):
-                    # duck-type
                     tid = int(getattr(t, "id", 0) or 0)
                     title = str(getattr(t, "title", "") or "")
                 else:
@@ -78,7 +84,6 @@ async def list_forum_topics_mtproto(
                 )
             last = topics[-1]
             offset_topic = int(getattr(last, "id", 0) or 0)
-            # pagination fields from accompanying messages if present
             msgs = list(getattr(result, "messages", []) or [])
             if msgs:
                 m = msgs[-1]
@@ -97,3 +102,33 @@ async def list_forum_topics_mtproto(
             await client.disconnect()
         except Exception:  # noqa: BLE001
             pass
+
+
+def _telethon_proxy(proxy: str | None):
+    """Convert socks5://user:pass@host:port to Telethon proxy tuple."""
+    if not proxy or not str(proxy).strip():
+        return None
+    from urllib.parse import urlparse
+
+    u = urlparse(proxy.strip())
+    if not u.hostname or not u.port:
+        return None
+    scheme = (u.scheme or "socks5").lower()
+    # telethon: (socks.SOCKS5, host, port, True, user, password)
+    try:
+        import socks
+    except ImportError:
+        return None
+    kind = socks.SOCKS5
+    if "socks4" in scheme:
+        kind = socks.SOCKS4
+    elif scheme.startswith("http"):
+        kind = socks.HTTP
+    return (
+        kind,
+        u.hostname,
+        int(u.port),
+        True,
+        u.username,
+        u.password,
+    )

@@ -240,6 +240,7 @@ async def cmd_topics(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             chat_id=target_chat_id,
             api_id=settings.telegram_api_id or None,
             api_hash=settings.telegram_api_hash or None,
+            proxy=(settings.telegram_proxy or "").strip() or None,
         )
     except Exception as exc:  # noqa: BLE001
         err = str(exc)[:300]

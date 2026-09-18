@@ -159,6 +159,13 @@ git clone --branch cursor/local-assistant-scaffold-d6ce --depth 1 https://github
 
 Панель → «Проверить обновление». В `.env`: `AUTO_UPDATE=1`.
 
+## Прокси Telegram (VPS Amnezia / NL)
+
+Полный VPN ломает госуслуги/банки. Решение: SOCKS5 на VPS, боты только через него.
+
+См. `PROXY_SETUP.txt` и `scripts/setup_tg_socks_vps.sh` на сервере.  
+В `.env` ассистента и второго бота одна строка `TELEGRAM_PROXY=socks5://...`
+
 ## Если бот выключился и не отвечает
 
 `START_BOT.bat` с **v1.010** — watchdog: после выхода/краша сам поднимает бота снова.  

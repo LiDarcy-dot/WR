@@ -1,0 +1,42 @@
+Прокси Telegram через VPS (Amnezia / NL)
+========================================
+
+Цель: боты ходят в Telegram через Нидерланды, а браузер
+(госуслуги / банки / ЖКХ) — напрямую из РФ, без VPN на весь ПК.
+
+1) На VPS (SSH под root), один раз:
+
+   # скопируй файл scripts/setup_tg_socks_vps.sh на сервер и:
+   bash setup_tg_socks_vps.sh
+
+   Скрипт выведет строку вида:
+   TELEGRAM_PROXY=socks5://tgproxy:PASSWORD@IP:1080
+
+   Запомни её — одна на оба бота.
+
+2) Ассистент (Desktop\Assistant\.env) — добавь строку:
+
+   TELEGRAM_PROXY=socks5://tgproxy:PASSWORD@IP:1080
+
+   Полный Amnezia-туннель на Windows лучше выключить
+   (или не гонять через него браузер).
+
+3) Второй бот — тот же TELEGRAM_PROXY в его конфиге/.env
+   (или proxy_url / socks в его библиотеке).
+
+   python-telegram-bot:
+     Application.builder().token(...).proxy(url).get_updates_proxy(url)
+
+   aiogram 3:
+     session = AiohttpSession(proxy=url)
+
+4) Перезапуск ассистента: START_BOT.bat
+   В логе должно быть: Telegram API via proxy: socks5://tgproxy:***@IP:1080
+   /start должен ответить.
+
+5) Проверка split:
+   - бот отвечает в Telegram
+   - в обычном Chrome 2ip.ru = НЕ голландский IP
+   - госуслуги открываются
+
+Браузер ассистента (позже) всегда direct — прокси только для Telegram API.

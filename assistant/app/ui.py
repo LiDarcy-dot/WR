@@ -138,12 +138,29 @@ def control_panel_html(st) -> str:
         "\n<i>GPU% в простое 1–6% — норма. Скачок при «Тест ИИ» или вопросе боту. "
         "Смотри также VRAM в LM Studio / диспетчере.</i>"
     )
+    if getattr(st, "telegram_proxy", None):
+        # mask password
+        px = st.telegram_proxy
+        if "@" in px:
+            left, right = px.rsplit("@", 1)
+            if "://" in left:
+                sch, rest = left.split("://", 1)
+                user = rest.split(":", 1)[0]
+                px_show = f"{sch}://{user}:***@{right}"
+            else:
+                px_show = f"***@{right}"
+        else:
+            px_show = px
+        proxy_line = f"TG proxy: <code>{esc(px_show)}</code>"
+    else:
+        proxy_line = "TG proxy: выкл (прямое соединение)"
 
     return (
         f"<b>Панель управления</b> · {esc(st.version)}\n\n"
         f"<b>Бот</b>\n{bot}\n"
         f"Версии: {ver_line}\n"
         f"Автообновление: {au}\n"
+        f"{proxy_line}\n"
         f"Веб: <code>{esc(st.web_panel)}</code>\n\n"
         f"<b>Интернет</b>\n{net}\n\n"
         f"<b>ИИ (LM Studio)</b>\n{lm_line}\n"

@@ -88,6 +88,22 @@ def _is_owner(update: Update, settings: Settings) -> bool:
     return bool(user and user.id == settings.telegram_owner_id)
 
 
+def _mask_proxy(url: str) -> str:
+    """Hide password in proxy URL for logs."""
+    if not url or "@" not in url:
+        return url or "(none)"
+    try:
+        left, right = url.rsplit("@", 1)
+        scheme_user = left.split("://", 1)
+        if len(scheme_user) == 2:
+            scheme, userinfo = scheme_user
+            user = userinfo.split(":", 1)[0]
+            return f"{scheme}://{user}:***@{right}"
+        return f"***@{right}"
+    except Exception:  # noqa: BLE001
+        return "(proxy set)"
+
+
 def esc_err(exc: Exception) -> str:
     import html as html_mod
 
@@ -236,6 +252,7 @@ async def _build_control_panel(context: ContextTypes.DEFAULT_TYPE) -> tuple[str,
         install_root=install_root,
         update_repo=settings.auto_update_repo,
         update_branch=settings.auto_update_branch,
+        telegram_proxy=(settings.telegram_proxy or "").strip(),
     )
     return control_panel_html(st), control_panel_keyboard(paused=paused)
 
@@ -1636,17 +1653,18 @@ def create_app(settings: Settings) -> Application:
     # install root = folder with main.py / VERSION (Desktop\Assistant)
     install_root = Path(__file__).resolve().parents[1]
 
-    application = (
-        Application.builder()
-        .token(settings.telegram_bot_token)
-        .post_init(_post_init)
-        .build()
-    )
+    application = Application.builder().token(settings.telegram_bot_token)
+    proxy = (settings.telegram_proxy or "").strip()
+    if proxy:
+        log.info("Telegram API via proxy: %s", _mask_proxy(proxy))
+        application = application.proxy(proxy).get_updates_proxy(proxy)
+    application = application.post_init(_post_init).build()
     application.bot_data["settings"] = settings
     application.bot_data["db"] = conn
     application.bot_data["lm"] = lm
     application.bot_data["router"] = router
     application.bot_data["install_root"] = install_root
+    application.bot_data["telegram_proxy"] = proxy
 
     application.add_handler(CommandHandler("start", cmd_start))
     application.add_handler(CommandHandler("menu", cmd_menu))
