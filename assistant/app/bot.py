@@ -1653,11 +1653,26 @@ def create_app(settings: Settings) -> Application:
     # install root = folder with main.py / VERSION (Desktop\Assistant)
     install_root = Path(__file__).resolve().parents[1]
 
-    application = Application.builder().token(settings.telegram_bot_token)
+    application = (
+        Application.builder()
+        .token(settings.telegram_bot_token)
+        .connect_timeout(40.0)
+        .read_timeout(40.0)
+        .write_timeout(40.0)
+        .pool_timeout(15.0)
+        .get_updates_connect_timeout(40.0)
+        .get_updates_read_timeout(40.0)
+        .get_updates_pool_timeout(15.0)
+    )
     proxy = (settings.telegram_proxy or "").strip()
     if proxy:
         log.info("Telegram API via proxy: %s", _mask_proxy(proxy))
         application = application.proxy(proxy).get_updates_proxy(proxy)
+    else:
+        log.warning(
+            "TELEGRAM_PROXY не задан — если Telegram из РФ режется, "
+            "бот будет падать с TimedOut. См. PROXY_SETUP.txt"
+        )
     application = application.post_init(_post_init).build()
     application.bot_data["settings"] = settings
     application.bot_data["db"] = conn
@@ -1802,4 +1817,32 @@ def run_bot(settings: Settings | None = None) -> None:
 
     app = create_app(settings)
     log.info("Bot starting; data dir=%s", settings.assistant_data_dir)
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    if (settings.telegram_proxy or "").strip():
+        try:
+            import asyncio
+
+            import httpx
+
+            async def _probe() -> None:
+                async with httpx.AsyncClient(
+                    proxy=settings.telegram_proxy.strip(), timeout=25.0
+                ) as client:
+                    r = await client.get("https://api.telegram.org")
+                    log.info("Proxy probe api.telegram.org -> HTTP %s", r.status_code)
+
+            asyncio.run(_probe())
+        except Exception as exc:  # noqa: BLE001
+            log.error(
+                "Прокси не достучался до Telegram: %s. "
+                "Проверь TELEGRAM_PROXY в .env и что Amnezia full-tunnel выключен.",
+                exc,
+            )
+    try:
+        app.run_polling(
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True,
+            bootstrap_retries=5,
+        )
+    except Exception:
+        log.exception("run_polling crashed")
+        raise

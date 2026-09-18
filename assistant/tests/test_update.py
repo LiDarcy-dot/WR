@@ -81,8 +81,19 @@ def test_schedule_restart_writes_helper(tmp_path: Path) -> None:
 
 def test_version_is_1010() -> None:
     root = Path(__file__).resolve().parents[1]
-    assert read_local_version(root) == "1.012"
-    assert is_newer("1.012", "1.011")
+    assert read_local_version(root) == "1.013"
+    assert is_newer("1.013", "1.012")
+
+
+def test_normalize_proxy_to_socks5h() -> None:
+    from app.config import Settings
+
+    assert (
+        Settings._normalize_proxy("socks5://u:p@1.2.3.4:1080")
+        == "socks5h://u:p@1.2.3.4:1080"
+    )
+    assert Settings._normalize_proxy('  "socks5://x"  ') == "socks5h://x"
+    assert Settings._normalize_proxy("") == ""
 
 
 def test_hard_restart_under_watchdog_exits_only(monkeypatch, tmp_path: Path) -> None:

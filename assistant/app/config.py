@@ -59,6 +59,19 @@ class Settings(BaseSettings):
             return None
         return value
 
+    @field_validator("telegram_proxy", mode="before")
+    @classmethod
+    def _normalize_proxy(cls, value):  # noqa: ANN001
+        if value is None:
+            return ""
+        s = str(value).strip().lstrip("\ufeff").strip().strip('"').strip("'")
+        if not s:
+            return ""
+        # Resolve DNS via proxy (important from RU networks)
+        if s.startswith("socks5://"):
+            s = "socks5h://" + s[len("socks5://") :]
+        return s
+
     @property
     def db_path(self) -> Path:
         return self.assistant_data_dir / "db" / "assistant.sqlite3"
