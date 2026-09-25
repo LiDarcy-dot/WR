@@ -1820,26 +1820,37 @@ def run_bot(settings: Settings | None = None) -> None:
 
     app = create_app(settings)
     log.info("Bot starting; data dir=%s", settings.assistant_data_dir)
-    if (settings.telegram_proxy or "").strip():
-        try:
-            import asyncio
+    proxy = (settings.telegram_proxy or "").strip() or None
+    try:
+        import asyncio
 
-            import httpx
+        import httpx
 
-            async def _probe() -> None:
-                async with httpx.AsyncClient(
-                    proxy=settings.telegram_proxy.strip(), timeout=25.0
-                ) as client:
+        async def _preflight() -> None:
+            async with httpx.AsyncClient(proxy=proxy, timeout=30.0) as client:
+                if proxy:
                     r = await client.get("https://api.telegram.org")
                     log.info("Proxy probe api.telegram.org -> HTTP %s", r.status_code)
+                # Polling conflicts if a webhook is still set on this token
+                # (hosting / old deploy / another tool). Clear it every start.
+                token = settings.telegram_bot_token.strip()
+                wh = await client.post(
+                    f"https://api.telegram.org/bot{token}/deleteWebhook",
+                    json={"drop_pending_updates": True},
+                )
+                log.info(
+                    "deleteWebhook -> HTTP %s %s",
+                    wh.status_code,
+                    (wh.text or "")[:180],
+                )
 
-            asyncio.run(_probe())
-        except Exception as exc:  # noqa: BLE001
-            log.error(
-                "Прокси не достучался до Telegram: %s. "
-                "Проверь TELEGRAM_PROXY в .env и что Amnezia full-tunnel выключен.",
-                exc,
-            )
+        asyncio.run(_preflight())
+    except Exception as exc:  # noqa: BLE001
+        log.error(
+            "Telegram preflight failed: %s. "
+            "Если Conflict/webhook — проверь токен; если TimedOut — TELEGRAM_PROXY.",
+            exc,
+        )
     try:
         app.run_polling(
             allowed_updates=Update.ALL_TYPES,
