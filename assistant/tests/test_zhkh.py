@@ -38,6 +38,9 @@ def test_parse_reading() -> None:
 
 def test_intents() -> None:
     assert classify_intent("жкх").kind == "list_zhkh"
+    assert classify_intent("что по эл счетчикам").kind == "list_zhkh"
+    assert classify_intent("что по электричеству").kind == "list_zhkh"
+    assert classify_intent("чекни эл счетчики").kind == "list_zhkh"
     assert classify_intent("показания 999").kind == "zhkh_reading"
     assert classify_intent("подал показания").kind == "zhkh_mark_sent"
 

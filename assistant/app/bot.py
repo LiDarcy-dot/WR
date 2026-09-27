@@ -181,15 +181,17 @@ async def _portal_submit_with_vault(
             "Всё равно попробую — портал может отказать."
         )
 
+    from app.zhkh.portal import ASK_CREDS_HTML
+
     creds = vault.get_credential(conn, settings.assistant_data_dir, SERVICE)
     if not creds:
-        set_awaiting_creds(context.application.bot_data, chat_id, payload)
-        return (
-            "Нужен вход в ЛК Мосэнергосбыт.\n"
-            "Пришли одной строкой:\n"
-            "<code>логин: ТЕЛЕФОН_ИЛИ_EMAIL_ИЛИ_ЛС пароль: ПАРОЛЬ</code>\n\n"
-            "Можно несколько попыток. Пароль сохраню зашифрованно только на этом ПК."
+        set_awaiting_creds(
+            context.application.bot_data,
+            chat_id,
+            purpose="submit",
+            submit=payload,
         )
+        return ASK_CREDS_HTML
 
     login, password = creds
     await update.effective_message.reply_text("Вхожу в ЛК и передаю показания…")
@@ -226,13 +228,90 @@ async def _portal_submit_with_vault(
     # auth fail → ask creds again
     low = (result.message or "").lower()
     if "вход" in low or "авториз" in low or "парол" in low:
-        set_awaiting_creds(context.application.bot_data, chat_id, payload)
+        set_awaiting_creds(
+            context.application.bot_data,
+            chat_id,
+            purpose="submit",
+            submit=payload,
+        )
         return (
             f"Не вошёл: {result.message}\n\n"
             "Пришли заново:\n"
             "<code>логин: … пароль: …</code>"
         )
     return f"Не передал: {result.message}"
+
+
+async def _portal_check_with_vault(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    """Try LK login and report meters; ask/retry credentials as needed."""
+    from app import vault
+    from app.zhkh.mosenergosbyt import window_status
+    from app.zhkh.photo_session import set_awaiting_creds
+    from app.zhkh.portal import (
+        ASK_CREDS_HTML,
+        SERVICE,
+        check_cabinet,
+        format_cabinet_report,
+    )
+    from app.zhkh.service import format_zhkh_status_html
+
+    settings: Settings = context.application.bot_data["settings"]
+    conn = context.application.bot_data["db"]
+    chat_id = update.effective_chat.id
+    active = (settings.mosenergosbyt_meter or "14195368").strip()
+    win = window_status(timezone=settings.timezone)
+
+    local = format_zhkh_status_html(conn, timezone=settings.timezone)
+    creds = vault.get_credential(conn, settings.assistant_data_dir, SERVICE)
+    if not creds:
+        set_awaiting_creds(
+            context.application.bot_data, chat_id, purpose="check"
+        )
+        await update.effective_message.reply_text(
+            local + "\n\n" + ASK_CREDS_HTML,
+            parse_mode=ParseMode.HTML,
+            reply_markup=zhkh_keyboard(),
+            disable_web_page_preview=True,
+        )
+        return
+
+    login, password = creds
+    await update.effective_message.reply_text("Смотрю ЛК Мосэнергосбыт…")
+    result = await asyncio.to_thread(check_cabinet, login, password)
+    if result.ok:
+        report = format_cabinet_report(
+            result.meters,
+            active_meter=active,
+            window_label=win.label,
+        )
+        await update.effective_message.reply_text(
+            report,
+            parse_mode=ParseMode.HTML,
+            reply_markup=zhkh_keyboard(),
+            disable_web_page_preview=True,
+        )
+        return
+
+    if result.auth_failed:
+        set_awaiting_creds(
+            context.application.bot_data, chat_id, purpose="check"
+        )
+        await update.effective_message.reply_text(
+            f"{result.message}\n\n{ASK_CREDS_HTML}",
+            parse_mode=ParseMode.HTML,
+            reply_markup=zhkh_keyboard(),
+        )
+        return
+
+    await update.effective_message.reply_text(
+        f"{local}\n\nЛК сейчас не открылся: {result.message}",
+        parse_mode=ParseMode.HTML,
+        reply_markup=zhkh_keyboard(),
+        disable_web_page_preview=True,
+    )
 
 
 async def apply_pending(
@@ -450,41 +529,85 @@ async def _handle_chat_text(
         )
         return
 
-    # Mosenergosbyt credentials reply (while waiting after confirm)
-    from app.zhkh.photo_session import get_awaiting_creds, pop_awaiting_creds
-    from app.zhkh.portal import SERVICE, parse_credentials_message
+    # Mosenergosbyt credentials reply (check / submit retry loop)
+    from app.zhkh.photo_session import (
+        get_awaiting_creds,
+        pop_awaiting_creds,
+        set_awaiting_creds,
+    )
+    from app.zhkh.portal import ASK_CREDS_HTML, SERVICE, parse_credentials_message
     from app import vault as vault_mod
 
     awaiting = get_awaiting_creds(context.application.bot_data, chat_id)
     if awaiting:
-        parsed_creds = parse_credentials_message(text)
-        if parsed_creds:
-            login, password = parsed_creds
-            vault_mod.upsert_credential(
-                conn,
-                settings.assistant_data_dir,
-                service=SERVICE,
-                login=login,
-                password=password,
-            )
-            pop_awaiting_creds(context.application.bot_data, chat_id)
-            await update.effective_message.reply_text(
-                f"Сохранил логин <code>{login}</code> (пароль зашифрован на ПК). "
-                "Пробую передать показания…",
-                parse_mode=ParseMode.HTML,
-            )
-            msg = await _portal_submit_with_vault(update, context, awaiting)
-            await update.effective_message.reply_text(msg, parse_mode=ParseMode.HTML)
-            return
         if intent.kind in {"cancel", "abort"}:
             pop_awaiting_creds(context.application.bot_data, chat_id)
             await update.effective_message.reply_text("Ок, вход в ЛК отменил.")
             return
+        parsed_creds = parse_credentials_message(text)
+        if not parsed_creds:
+            await update.effective_message.reply_text(
+                ASK_CREDS_HTML, parse_mode=ParseMode.HTML
+            )
+            return
+        login_part, pass_part = parsed_creds
+        existing = vault_mod.get_credential(
+            conn, settings.assistant_data_dir, SERVICE
+        )
+        login = login_part or awaiting.get("partial_login") or (
+            existing[0] if existing else None
+        )
+        password = pass_part or (existing[1] if existing and not login_part else None)
+        if login_part and not pass_part:
+            set_awaiting_creds(
+                context.application.bot_data,
+                chat_id,
+                purpose=awaiting.get("purpose") or "check",
+                submit=awaiting.get("submit"),
+                partial_login=login_part,
+            )
+            await update.effective_message.reply_text(
+                f"Логин <code>{login_part}</code> принял. Теперь:\n"
+                "<code>пароль: …</code>",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        if not login or not password:
+            set_awaiting_creds(
+                context.application.bot_data,
+                chat_id,
+                purpose=awaiting.get("purpose") or "check",
+                submit=awaiting.get("submit"),
+                partial_login=login,
+            )
+            await update.effective_message.reply_text(
+                "Нужны и логин, и пароль.\n" + ASK_CREDS_HTML,
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        vault_mod.upsert_credential(
+            conn,
+            settings.assistant_data_dir,
+            service=SERVICE,
+            login=login,
+            password=password,
+        )
+        purpose = awaiting.get("purpose") or "check"
+        submit_payload = awaiting.get("submit")
+        pop_awaiting_creds(context.application.bot_data, chat_id)
         await update.effective_message.reply_text(
-            "Жду строку вида:\n<code>логин: XXX пароль: YYY</code>\n"
-            "или «отмена».",
+            f"Сохранил логин <code>{login}</code>. Пробую войти…",
             parse_mode=ParseMode.HTML,
         )
+        if purpose == "submit" and submit_payload:
+            msg = await _portal_submit_with_vault(
+                update, context, submit_payload
+            )
+            await update.effective_message.reply_text(
+                msg, parse_mode=ParseMode.HTML
+            )
+        else:
+            await _portal_check_with_vault(update, context)
         return
 
     if intent.kind == "confirm":
@@ -540,26 +663,47 @@ async def _handle_chat_text(
         return
 
     if intent.kind == "list_zhkh":
-        await update.effective_message.reply_text(
-            format_zhkh_status_html(conn, timezone=settings.timezone),
-            parse_mode=ParseMode.HTML,
-            reply_markup=zhkh_keyboard(),
-            disable_web_page_preview=True,
-        )
+        await _portal_check_with_vault(update, context)
         return
 
     if intent.kind == "zhkh_creds":
-        from app.zhkh.portal import SERVICE, parse_credentials_message
+        from app.zhkh.portal import ASK_CREDS_HTML, SERVICE, parse_credentials_message
+        from app.zhkh.photo_session import set_awaiting_creds
         from app import vault as vault_mod
 
         parsed_creds = parse_credentials_message(text)
         if not parsed_creds:
             await update.effective_message.reply_text(
-                "Формат: <code>логин: XXX пароль: YYY</code>",
+                ASK_CREDS_HTML, parse_mode=ParseMode.HTML
+            )
+            return
+        login_part, pass_part = parsed_creds
+        existing = vault_mod.get_credential(
+            conn, settings.assistant_data_dir, SERVICE
+        )
+        login = login_part or (existing[0] if existing else None)
+        password = pass_part or (existing[1] if existing and login_part is None else None)
+        if login and not password:
+            set_awaiting_creds(
+                context.application.bot_data,
+                chat_id,
+                purpose="check",
+                partial_login=login,
+            )
+            await update.effective_message.reply_text(
+                f"Логин <code>{login}</code> принял. Теперь пришли:\n"
+                "<code>пароль: …</code>",
                 parse_mode=ParseMode.HTML,
             )
             return
-        login, password = parsed_creds
+        if not login or not password:
+            set_awaiting_creds(
+                context.application.bot_data, chat_id, purpose="check"
+            )
+            await update.effective_message.reply_text(
+                ASK_CREDS_HTML, parse_mode=ParseMode.HTML
+            )
+            return
         vault_mod.upsert_credential(
             conn,
             settings.assistant_data_dir,
@@ -567,25 +711,7 @@ async def _handle_chat_text(
             login=login,
             password=password,
         )
-        # quick login probe
-        await update.effective_message.reply_text("Проверяю вход в ЛК…")
-        try:
-            from app.zhkh.portal import login_and_list_meters
-
-            meters = await asyncio.to_thread(login_and_list_meters, login, password)
-            lines = [f"Вход ок. Счетов: {len(meters)}"]
-            for m in meters[:8]:
-                lines.append(f"• <code>{m.nn_ls}</code> — {m.title}")
-            lines.append(
-                f"Активный у бота: <code>{settings.mosenergosbyt_meter}</code>"
-            )
-            await update.effective_message.reply_text(
-                "\n".join(lines), parse_mode=ParseMode.HTML
-            )
-        except Exception as exc:  # noqa: BLE001
-            await update.effective_message.reply_text(
-                f"Сохранил, но вход не вышел: {exc}\nМожно прислать другие данные."
-            )
+        await _portal_check_with_vault(update, context)
         return
 
     if intent.kind == "zhkh_reading":

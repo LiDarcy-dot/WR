@@ -36,7 +36,6 @@ def merge_reading(
 ) -> dict:
     """Merge vision result into session. force_slot overrides which field a single value fills."""
     if force_slot == "t1" and t1 is None and t2 is not None and t3 is None:
-        # model put sole number in t2 by mistake
         t1, t2 = t2, None
     if force_slot == "t2" and t2 is None and t1 is not None and t3 is None:
         t2, t1 = t1, None
@@ -76,8 +75,22 @@ def creds_wait_store(bot_data: dict) -> dict:
     return bot_data.setdefault("zhkh_awaiting_creds", {})
 
 
-def set_awaiting_creds(bot_data: dict, chat_id: int, payload: dict[str, Any]) -> None:
-    creds_wait_store(bot_data)[int(chat_id)] = payload
+def set_awaiting_creds(
+    bot_data: dict,
+    chat_id: int,
+    *,
+    purpose: str = "check",
+    submit: dict[str, Any] | None = None,
+    partial_login: str | None = None,
+) -> None:
+    """purpose: check | submit. Always a structured envelope."""
+    # back-compat: if someone passes old flat submit payload as sole arg via misuse — ignore
+    env: dict[str, Any] = {
+        "purpose": purpose if purpose in {"check", "submit"} else "check",
+        "submit": submit,
+        "partial_login": partial_login,
+    }
+    creds_wait_store(bot_data)[int(chat_id)] = env
 
 
 def pop_awaiting_creds(bot_data: dict, chat_id: int) -> dict | None:
@@ -85,4 +98,10 @@ def pop_awaiting_creds(bot_data: dict, chat_id: int) -> dict | None:
 
 
 def get_awaiting_creds(bot_data: dict, chat_id: int) -> dict | None:
-    return creds_wait_store(bot_data).get(int(chat_id))
+    raw = creds_wait_store(bot_data).get(int(chat_id))
+    if not raw:
+        return None
+    # migrate old flat submit payload {t1,t2,...}
+    if "purpose" not in raw and ("t1" in raw or "meter_number" in raw):
+        return {"purpose": "submit", "submit": raw, "partial_login": None}
+    return raw

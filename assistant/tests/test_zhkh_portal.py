@@ -14,6 +14,8 @@ def test_parse_creds() -> None:
         "secret",
     )
     assert parse_credentials_message("логин me@x.ru пароль q w e")[0] == "me@x.ru"
+    assert parse_credentials_message("логин: 7900") == ("7900", None)
+    assert parse_credentials_message("пароль: secret") == (None, "secret")
 
 
 def test_vault_roundtrip(tmp_path: Path) -> None:
