@@ -14,7 +14,7 @@ SYSTEM_JSON_HINT = """
 {
   "mode": "propose_action",
   "message": "краткое пояснение по-русски",
-  "action_type": "upsert_person|create_reminder_one_shot|create_reminder_recurring|create_entity_type",
+  "action_type": "upsert_person|create_reminder_one_shot|create_reminder_recurring|create_entity_type|record_zhkh_reading|mark_zhkh_submitted",
   "payload": { ... }
 }
 Не пиши «подтверди» обычным текстом — только propose_action JSON.
@@ -35,6 +35,9 @@ SYSTEM_JSON_HINT = """
 - create_reminder_one_shot: title, fire_at (ISO), body?
 - create_reminder_recurring: title, rrule, dtstart (ISO date), time_of_day, body?, human_summary
 - create_entity_type: name (latin snake), title, fields:[{key,label,field_type,required}]
+- record_zhkh_reading: value (number), meter_number? (default 14195368), period? (YYYY-MM), note?
+- mark_zhkh_submitted: meter_number?, period?
+Мосэнергосбыт: окно передачи показаний 15–26 число; активный счётчик 14195368.
 """
 
 WEB_SYSTEM = """Ты помощник с доступом к свежим результатам веб-поиска.

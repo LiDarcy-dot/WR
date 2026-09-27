@@ -52,6 +52,12 @@ class Settings(BaseSettings):
         alias="AUTO_UPDATE_BRANCH",
     )
 
+    # Mosenergosbyt: active meter for readings (window 15–26)
+    mosenergosbyt_meter: str = Field(
+        default="14195368",
+        alias="MOSENERGOSBYT_METER",
+    )
+
     @field_validator("telegram_group_id", "telegram_api_id", mode="before")
     @classmethod
     def _empty_int_none(cls, value):  # noqa: ANN001

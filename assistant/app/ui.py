@@ -34,9 +34,10 @@ def home_keyboard(*, paused: bool = False) -> InlineKeyboardMarkup:
                 InlineKeyboardButton("Напомнить", callback_data="menu:reminders"),
             ],
             [
+                InlineKeyboardButton("ЖКХ", callback_data="menu:zhkh"),
                 InlineKeyboardButton("Поиск", callback_data="menu:web"),
-                pause_btn,
             ],
+            [pause_btn],
             [
                 InlineKeyboardButton("Панель управления", callback_data="panel:show"),
             ],
@@ -245,8 +246,10 @@ def menu_section_html(section: str) -> str:
             "Сложные правила тоже можно — покажу как понял."
         ),
         "zhkh": (
-            "<b>ЖКХ</b>\n"
-            "<i>холодная вода 12.3 за август</i>"
+            "<b>ЖКХ · Мосэнергосбыт</b>\n"
+            "Счётчик <code>14195368</code> · окно <b>15–26</b>.\n"
+            "<i>показания 12345</i> — записать\n"
+            "<i>подал показания</i> — отметить подачу в кабинет"
         ),
         "inbox": (
             "<b>Файлы</b>\n"
@@ -425,19 +428,33 @@ def person_keyboard(person_id: int, month: int | None, day: int | None, year: in
 
 
 def section_keyboard(section: str) -> InlineKeyboardMarkup:
-    rows = [
-        [InlineKeyboardButton("Календарь", callback_data="cal:today")],
-        [InlineKeyboardButton("Назад", callback_data="menu:home")],
-    ]
+    rows: list[list[InlineKeyboardButton]] = []
+    if section == "zhkh":
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    "Отметить: подал в кабинет", callback_data="zhkh:mark_sent"
+                )
+            ]
+        )
+        rows.append(
+            [InlineKeyboardButton("Обновить статус", callback_data="menu:zhkh")]
+        )
+    else:
+        rows.append([InlineKeyboardButton("Календарь", callback_data="cal:today")])
     if section == "settings":
-        rows.insert(
-            0,
+        rows.append(
             [
                 InlineKeyboardButton("Пауза", callback_data="ctl:pause"),
                 InlineKeyboardButton("Снять паузу", callback_data="ctl:resume"),
-            ],
+            ]
         )
+    rows.append([InlineKeyboardButton("Назад", callback_data="menu:home")])
     return InlineKeyboardMarkup(rows)
+
+
+def zhkh_keyboard() -> InlineKeyboardMarkup:
+    return section_keyboard("zhkh")
 
 
 def format_action_card_html(action_type: str, payload: dict[str, Any]) -> str:
@@ -477,6 +494,22 @@ def format_action_card_html(action_type: str, payload: dict[str, Any]) -> str:
             esc(f.get("label", f.get("key", "?"))) for f in payload.get("fields") or []
         )
         return f"<b>{esc(payload.get('title'))}</b>\nполя: {fields or '—'}"
+
+    if action_type == "record_zhkh_reading":
+        return (
+            f"<b>Показания Мосэнергосбыт</b>\n"
+            f"Счётчик: <code>{esc(payload.get('meter_number') or '14195368')}</code>\n"
+            f"Период: {esc(payload.get('period') or 'текущий')}\n"
+            f"Значение: <b>{esc(payload.get('value'))}</b>\n"
+            f"{esc(payload.get('note') or '')}"
+        ).strip()
+
+    if action_type == "mark_zhkh_submitted":
+        return (
+            f"<b>Отметить подачу в кабинет</b>\n"
+            f"Счётчик: <code>{esc(payload.get('meter_number') or '14195368')}</code>\n"
+            f"Период: {esc(payload.get('period') or 'текущий')}"
+        )
 
     return esc(payload)
 

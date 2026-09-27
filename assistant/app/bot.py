@@ -39,7 +39,9 @@ from app.memory.formatters import (
     format_birthday_line,
     today_in_tz,
 )
-from app.scheduler import process_due_reminders
+from app.scheduler import process_due_reminders, process_zhkh_window_nudge
+from app.zhkh.parse import parse_zhkh_reading
+from app.zhkh.service import format_zhkh_status_html, mark_submitted
 from app.storage_layout import ensure_data_layout
 from app.topics.service import (
     cmd_topics,
@@ -77,6 +79,7 @@ from app.ui import (
     week_html,
     week_keyboard,
     welcome_html,
+    zhkh_keyboard,
 )
 from app.websearch.engine import format_research_context, gather_research
 
@@ -402,6 +405,52 @@ async def _handle_chat_text(
         text, kb = await _build_control_panel(context)
         await update.effective_message.reply_text(
             text, parse_mode=ParseMode.HTML, reply_markup=kb
+        )
+        return
+
+    if intent.kind == "list_zhkh":
+        await update.effective_message.reply_text(
+            format_zhkh_status_html(conn, timezone=settings.timezone),
+            parse_mode=ParseMode.HTML,
+            reply_markup=zhkh_keyboard(),
+            disable_web_page_preview=True,
+        )
+        return
+
+    if intent.kind == "zhkh_reading":
+        parsed = parse_zhkh_reading(text)
+        if not parsed:
+            await update.effective_message.reply_text(
+                "Не разобрал показания. Пример: показания 12345"
+            )
+            return
+        payload = {
+            "value": parsed.value,
+            "meter_number": parsed.meter_number
+            or (settings.mosenergosbyt_meter or "14195368"),
+            "note": parsed.note,
+        }
+        aid = repo.create_pending_action(conn, chat_id, "record_zhkh_reading", payload)
+        conn.commit()
+        card = format_action_card_html("record_zhkh_reading", payload)
+        await update.effective_message.reply_text(
+            f"{card}\n\nСохранить?",
+            parse_mode=ParseMode.HTML,
+            reply_markup=confirm_keyboard(aid),
+        )
+        return
+
+    if intent.kind == "zhkh_mark_sent":
+        payload = {
+            "meter_number": (settings.mosenergosbyt_meter or "14195368").strip()
+        }
+        aid = repo.create_pending_action(conn, chat_id, "mark_zhkh_submitted", payload)
+        conn.commit()
+        card = format_action_card_html("mark_zhkh_submitted", payload)
+        await update.effective_message.reply_text(
+            f"{card}\n\nОтметить?",
+            parse_mode=ParseMode.HTML,
+            reply_markup=confirm_keyboard(aid),
         )
         return
 
@@ -1464,11 +1513,41 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 reply_markup=people_keyboard(people, today),
             )
             return
+        if section == "zhkh":
+            await query.edit_message_text(
+                format_zhkh_status_html(conn, timezone=settings.timezone),
+                parse_mode=ParseMode.HTML,
+                reply_markup=zhkh_keyboard(),
+                disable_web_page_preview=True,
+            )
+            return
         await query.edit_message_text(
             menu_section_html(section),
             parse_mode=ParseMode.HTML,
             reply_markup=section_keyboard(section),
         )
+        return
+
+    if data == "zhkh:mark_sent":
+        try:
+            result = mark_submitted(
+                conn,
+                meter_number=(settings.mosenergosbyt_meter or "14195368").strip(),
+                timezone=settings.timezone,
+            )
+            await query.edit_message_text(
+                (
+                    f"Отметил подачу: счётчик <code>{result['meter_number']}</code>, "
+                    f"{result['period']} = <b>{result['value']:g}</b>"
+                ),
+                parse_mode=ParseMode.HTML,
+                reply_markup=zhkh_keyboard(),
+            )
+        except Exception as exc:  # noqa: BLE001
+            await query.edit_message_text(
+                f"Не смог отметить: {exc}",
+                reply_markup=zhkh_keyboard(),
+            )
         return
 
     if data.startswith("p:view:"):
@@ -1643,6 +1722,13 @@ def create_app(settings: Settings) -> Application:
     init_db(settings.db_path)
     conn = connect(settings.db_path)
     repo.ensure_runtime_schema(conn)
+    from app.zhkh.mosenergosbyt import ensure_mosenergosbyt_setup
+
+    ensure_mosenergosbyt_setup(
+        conn,
+        meter_number=(settings.mosenergosbyt_meter or "14195368").strip(),
+        timezone=settings.timezone,
+    )
     lm = LMStudioClient(settings.lm_studio_base_url, settings.lm_studio_model)
     router = ModelRouter(
         lm,
@@ -1726,6 +1812,12 @@ async def _post_init(application: Application) -> None:
             interval=60,
             first=45,
             name="topic_hello_cleanup",
+        )
+        application.job_queue.run_repeating(
+            process_zhkh_window_nudge,
+            interval=3600,
+            first=90,
+            name="zhkh_window_nudge",
         )
     else:
         log.error(

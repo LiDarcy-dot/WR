@@ -37,6 +37,13 @@ class EntityTypeDraft(BaseModel):
     fields: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class ZhkhReadingDraft(BaseModel):
+    value: float
+    period: str | None = None
+    meter_number: str | None = None
+    note: str | None = None
+
+
 class AssistantReply(BaseModel):
     """Структурированный ответ модели для бота."""
 
@@ -52,4 +59,6 @@ ACTION_TYPES = {
     "create_reminder_one_shot",
     "create_reminder_recurring",
     "create_entity_type",
+    "record_zhkh_reading",
+    "mark_zhkh_submitted",
 }

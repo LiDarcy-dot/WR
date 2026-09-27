@@ -9,6 +9,7 @@ from telegram.ext import ContextTypes
 
 from app.db import repo
 from app.reminders.rrule_utils import next_occurrence
+from app.zhkh.service import needs_window_nudge
 
 log = logging.getLogger(__name__)
 
@@ -97,3 +98,33 @@ async def process_due_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
         except Exception:
             log.exception("failed quiet ping recurring id=%s", row["id"])
             conn.rollback()
+
+
+async def process_zhkh_window_nudge(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Once a day during 15–26: nudge if readings not submitted."""
+    settings = context.application.bot_data["settings"]
+    conn = context.application.bot_data["db"]
+    if repo.is_paused(conn):
+        return
+    try:
+        text = needs_window_nudge(conn, timezone=settings.timezone)
+    except Exception:
+        log.exception("zhkh nudge check failed")
+        return
+    if not text:
+        return
+    # de-dupe: one nudge per calendar day
+    today = datetime.now(tz=ZoneInfo(settings.timezone)).date().isoformat()
+    key = f"zhkh_nudge:{today}"
+    if repo.get_state(conn, key) == "1":
+        return
+    try:
+        await context.bot.send_message(
+            chat_id=settings.telegram_owner_id,
+            text=f"• {text}",
+        )
+        repo.set_state(conn, key, "1")
+        conn.commit()
+    except Exception:
+        log.exception("failed zhkh nudge")
+        conn.rollback()

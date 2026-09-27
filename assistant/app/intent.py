@@ -381,4 +381,17 @@ def classify_intent(text: str) -> Intent:
     ):
         return Intent("recent_writes", t)
 
+    from app.zhkh.parse import (
+        looks_like_zhkh_list,
+        looks_like_zhkh_mark_sent,
+        parse_zhkh_reading,
+    )
+
+    if looks_like_zhkh_mark_sent(t):
+        return Intent("zhkh_mark_sent", t)
+    if parse_zhkh_reading(t) is not None:
+        return Intent("zhkh_reading", t)
+    if looks_like_zhkh_list(t):
+        return Intent("list_zhkh", t)
+
     return Intent("chat", t)

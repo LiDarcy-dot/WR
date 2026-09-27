@@ -486,6 +486,29 @@ def build_memory_block(conn: sqlite3.Connection, timezone: str = "Europe/Moscow"
         for p in people[:40]:
             rel = f" ({p['relation']})" if p["relation"] else ""
             lines.append(f"• id={p['id']} {p['display_name']}{rel}")
+    try:
+        from app.zhkh.mosenergosbyt import window_status
+        from app.zhkh.service import get_active_meter, get_submission
+
+        win = window_status(timezone=timezone)
+        meter = get_active_meter(conn)
+        if meter:
+            sub = get_submission(conn, int(meter["id"]), win.period)
+            sub_s = (
+                f"{sub['value']:g} ({sub['status']})"
+                if sub and sub["value"] is not None
+                else "нет"
+            )
+            lines.append("ЖКХ / Мосэнергосбыт:")
+            lines.append(
+                f"• счётчик {meter['meter_number']} · период {win.period} · "
+                f"окно {'открыто' if win.open else 'закрыто'} · показания: {sub_s}"
+            )
+            lines.append(
+                "• сейчас оплачивается только этот счётчик; другие в ЛК есть, но не активны у бота"
+            )
+    except Exception:
+        pass
     return "\n".join(lines)
 
 
@@ -606,6 +629,13 @@ def ensure_runtime_schema(conn: sqlite3.Connection) -> None:
     from app.topics.store import ensure_topics_schema
 
     ensure_topics_schema(conn)
+    from app.zhkh.mosenergosbyt import ensure_mosenergosbyt_setup, ensure_zhkh_columns
+
+    ensure_zhkh_columns(conn)
+    try:
+        ensure_mosenergosbyt_setup(conn)
+    except Exception:
+        pass
     # Refresh default persona so old installs learn about the DB
     conn.execute(
         """

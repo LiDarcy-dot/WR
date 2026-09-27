@@ -60,6 +60,22 @@ def format_action_card(action_type: str, payload: dict[str, Any]) -> str:
             f"Поля: {fields or '—'}"
         )
 
+    if action_type == "record_zhkh_reading":
+        return (
+            "Карточка: показания Мосэнергосбыт\n"
+            f"Счётчик: {payload.get('meter_number') or '14195368'}\n"
+            f"Период: {payload.get('period') or 'текущий месяц'}\n"
+            f"Значение: {payload.get('value')}\n"
+            f"{payload.get('note') or ''}"
+        ).strip()
+
+    if action_type == "mark_zhkh_submitted":
+        return (
+            "Карточка: отметить подачу в кабинет\n"
+            f"Счётчик: {payload.get('meter_number') or '14195368'}\n"
+            f"Период: {payload.get('period') or 'текущий месяц'}"
+        )
+
     return f"Действие: {action_type}\n{payload}"
 
 
@@ -127,5 +143,39 @@ def apply_action(
         )
         conn.commit()
         return f"Сохранено: тип сущности id={et_id}"
+
+    if action_type == "record_zhkh_reading":
+        from app.zhkh.service import record_reading
+
+        src = "telegram"
+        if payload.get("note"):
+            src = f"telegram:{payload['note']}"
+        result = record_reading(
+            conn,
+            value=float(payload["value"]),
+            period=payload.get("period"),
+            meter_number=payload.get("meter_number"),
+            source=src,
+            timezone=timezone,
+        )
+        return (
+            f"Показания сохранены: счётчик {result['meter_number']}, "
+            f"{result['period']} = {result['value']:g}. "
+            "После подачи в кабинете напиши: подал показания"
+        )
+
+    if action_type == "mark_zhkh_submitted":
+        from app.zhkh.service import mark_submitted
+
+        result = mark_submitted(
+            conn,
+            period=payload.get("period"),
+            meter_number=payload.get("meter_number"),
+            timezone=timezone,
+        )
+        return (
+            f"Отметил подачу в кабинет: счётчик {result['meter_number']}, "
+            f"{result['period']} = {result['value']:g}"
+        )
 
     raise ValueError(f"Неизвестный action_type: {action_type}")

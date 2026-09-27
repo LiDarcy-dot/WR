@@ -68,6 +68,7 @@ CREATE TABLE IF NOT EXISTS zhkh_meters (
     kind TEXT NOT NULL,
     unit TEXT,
     submit_rule TEXT,
+    meter_number TEXT,
     last_value REAL,
     last_submitted_at TEXT,
     active INTEGER NOT NULL DEFAULT 1,
