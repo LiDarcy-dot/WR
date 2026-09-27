@@ -154,6 +154,87 @@ def render_recent(conn) -> str:
     return "\n".join(lines)
 
 
+async def _portal_submit_with_vault(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    payload: dict,
+) -> str:
+    """Login to Mosenergosbyt and upload T1/T2. May ask for credentials."""
+    from app import vault
+    from app.zhkh.mosenergosbyt import window_status
+    from app.zhkh.photo_session import set_awaiting_creds
+    from app.zhkh.portal import SERVICE, submit_readings
+    from app.zhkh.service import mark_submitted, record_reading
+
+    settings: Settings = context.application.bot_data["settings"]
+    conn = context.application.bot_data["db"]
+    chat_id = update.effective_chat.id
+    meter = (payload.get("meter_number") or settings.mosenergosbyt_meter or "14195368").strip()
+    t1 = float(payload["t1"])
+    t2 = float(payload["t2"]) if payload.get("t2") is not None else None
+    t3 = float(payload["t3"]) if payload.get("t3") is not None else None
+
+    win = window_status(timezone=settings.timezone)
+    if not win.open:
+        await update.effective_message.reply_text(
+            f"⚠ Окно передачи сейчас закрыто (нужно {win.day_start}–{win.day_end}). "
+            "Всё равно попробую — портал может отказать."
+        )
+
+    creds = vault.get_credential(conn, settings.assistant_data_dir, SERVICE)
+    if not creds:
+        set_awaiting_creds(context.application.bot_data, chat_id, payload)
+        return (
+            "Нужен вход в ЛК Мосэнергосбыт.\n"
+            "Пришли одной строкой:\n"
+            "<code>логин: ТЕЛЕФОН_ИЛИ_EMAIL_ИЛИ_ЛС пароль: ПАРОЛЬ</code>\n\n"
+            "Можно несколько попыток. Пароль сохраню зашифрованно только на этом ПК."
+        )
+
+    login, password = creds
+    await update.effective_message.reply_text("Вхожу в ЛК и передаю показания…")
+    # blocking HTTP — run in thread
+    result = await asyncio.to_thread(
+        submit_readings,
+        login=login,
+        password=password,
+        meter_number=meter,
+        t1=t1,
+        t2=t2,
+        t3=t3,
+    )
+    note = f"T1={t1:g}" + (f"; T2={t2:g}" if t2 is not None else "")
+    record_reading(
+        conn,
+        value=t1,
+        meter_number=meter,
+        source=f"portal:{'ok' if result.ok else 'fail'}:{note}",
+        timezone=settings.timezone,
+    )
+    if result.ok:
+        try:
+            mark_submitted(conn, meter_number=meter, timezone=settings.timezone)
+        except Exception:
+            pass
+        return (
+            f"Передал в ЛК.\n"
+            f"ЛС/счётчик: <code>{result.nn_ls or meter}</code>\n"
+            f"T1={t1:g}" + (f" T2={t2:g}" if t2 is not None else "") + "\n"
+            f"{result.message}"
+        )
+
+    # auth fail → ask creds again
+    low = (result.message or "").lower()
+    if "вход" in low or "авториз" in low or "парол" in low:
+        set_awaiting_creds(context.application.bot_data, chat_id, payload)
+        return (
+            f"Не вошёл: {result.message}\n\n"
+            "Пришли заново:\n"
+            "<code>логин: … пароль: …</code>"
+        )
+    return f"Не передал: {result.message}"
+
+
 async def apply_pending(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -164,6 +245,19 @@ async def apply_pending(
     settings: Settings = context.application.bot_data["settings"]
     conn = context.application.bot_data["db"]
     payload = json.loads(pending["payload_json"])
+    if pending["action_type"] == "submit_zhkh_portal":
+        try:
+            msg = await _portal_submit_with_vault(update, context, payload)
+            repo.resolve_pending_action(conn, pending["id"], "applied")
+            conn.commit()
+        except Exception as exc:  # noqa: BLE001
+            conn.rollback()
+            await update.effective_message.reply_text(f"Не передал: {exc}")
+            return
+        await update.effective_message.reply_text(
+            msg, parse_mode=ParseMode.HTML
+        )
+        return
     try:
         result = apply_action(
             conn,
@@ -356,6 +450,43 @@ async def _handle_chat_text(
         )
         return
 
+    # Mosenergosbyt credentials reply (while waiting after confirm)
+    from app.zhkh.photo_session import get_awaiting_creds, pop_awaiting_creds
+    from app.zhkh.portal import SERVICE, parse_credentials_message
+    from app import vault as vault_mod
+
+    awaiting = get_awaiting_creds(context.application.bot_data, chat_id)
+    if awaiting:
+        parsed_creds = parse_credentials_message(text)
+        if parsed_creds:
+            login, password = parsed_creds
+            vault_mod.upsert_credential(
+                conn,
+                settings.assistant_data_dir,
+                service=SERVICE,
+                login=login,
+                password=password,
+            )
+            pop_awaiting_creds(context.application.bot_data, chat_id)
+            await update.effective_message.reply_text(
+                f"Сохранил логин <code>{login}</code> (пароль зашифрован на ПК). "
+                "Пробую передать показания…",
+                parse_mode=ParseMode.HTML,
+            )
+            msg = await _portal_submit_with_vault(update, context, awaiting)
+            await update.effective_message.reply_text(msg, parse_mode=ParseMode.HTML)
+            return
+        if intent.kind in {"cancel", "abort"}:
+            pop_awaiting_creds(context.application.bot_data, chat_id)
+            await update.effective_message.reply_text("Ок, вход в ЛК отменил.")
+            return
+        await update.effective_message.reply_text(
+            "Жду строку вида:\n<code>логин: XXX пароль: YYY</code>\n"
+            "или «отмена».",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
     if intent.kind == "confirm":
         if pending:
             await apply_pending(update, context, pending, via="текст")
@@ -417,24 +548,84 @@ async def _handle_chat_text(
         )
         return
 
+    if intent.kind == "zhkh_creds":
+        from app.zhkh.portal import SERVICE, parse_credentials_message
+        from app import vault as vault_mod
+
+        parsed_creds = parse_credentials_message(text)
+        if not parsed_creds:
+            await update.effective_message.reply_text(
+                "Формат: <code>логин: XXX пароль: YYY</code>",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        login, password = parsed_creds
+        vault_mod.upsert_credential(
+            conn,
+            settings.assistant_data_dir,
+            service=SERVICE,
+            login=login,
+            password=password,
+        )
+        # quick login probe
+        await update.effective_message.reply_text("Проверяю вход в ЛК…")
+        try:
+            from app.zhkh.portal import login_and_list_meters
+
+            meters = await asyncio.to_thread(login_and_list_meters, login, password)
+            lines = [f"Вход ок. Счетов: {len(meters)}"]
+            for m in meters[:8]:
+                lines.append(f"• <code>{m.nn_ls}</code> — {m.title}")
+            lines.append(
+                f"Активный у бота: <code>{settings.mosenergosbyt_meter}</code>"
+            )
+            await update.effective_message.reply_text(
+                "\n".join(lines), parse_mode=ParseMode.HTML
+            )
+        except Exception as exc:  # noqa: BLE001
+            await update.effective_message.reply_text(
+                f"Сохранил, но вход не вышел: {exc}\nМожно прислать другие данные."
+            )
+        return
+
     if intent.kind == "zhkh_reading":
         parsed = parse_zhkh_reading(text)
         if not parsed:
             await update.effective_message.reply_text(
-                "Не разобрал показания. Пример: показания 12345"
+                "Не разобрал показания. Пример: показания т1 123 т2 456"
+            )
+            return
+        meter = parsed.meter_number or (
+            settings.mosenergosbyt_meter or "14195368"
+        )
+        if parsed.t1 is not None and parsed.t2 is not None:
+            payload = {
+                "t1": parsed.t1,
+                "t2": parsed.t2,
+                "t3": parsed.t3,
+                "meter_number": meter,
+            }
+            aid = repo.create_pending_action(
+                conn, chat_id, "submit_zhkh_portal", payload
+            )
+            conn.commit()
+            card = format_action_card_html("submit_zhkh_portal", payload)
+            await update.effective_message.reply_text(
+                f"{card}\n\nПередать в личный кабинет?",
+                parse_mode=ParseMode.HTML,
+                reply_markup=confirm_keyboard(aid),
             )
             return
         payload = {
             "value": parsed.value,
-            "meter_number": parsed.meter_number
-            or (settings.mosenergosbyt_meter or "14195368"),
+            "meter_number": meter,
             "note": parsed.note,
         }
         aid = repo.create_pending_action(conn, chat_id, "record_zhkh_reading", payload)
         conn.commit()
         card = format_action_card_html("record_zhkh_reading", payload)
         await update.effective_message.reply_text(
-            f"{card}\n\nСохранить?",
+            f"{card}\n\nСохранить локально? (для подачи в ЛК нужны T1 и T2)",
             parse_mode=ParseMode.HTML,
             reply_markup=confirm_keyboard(aid),
         )
@@ -1108,6 +1299,15 @@ async def _abort_active_sessions(
         conn.commit()
         parts.append("приём в хранилище закрыл")
 
+    from app.zhkh import photo_session as zhkh_ps
+
+    if zhkh_ps.get_session(context.application.bot_data, chat_id):
+        zhkh_ps.clear_session(context.application.bot_data, chat_id)
+        parts.append("сбор показаний ЖКХ сбросил")
+    if zhkh_ps.get_awaiting_creds(context.application.bot_data, chat_id):
+        zhkh_ps.pop_awaiting_creds(context.application.bot_data, chat_id)
+        parts.append("ожидание логина ЛК отменил")
+
     if not parts:
         return False
     await update.effective_message.reply_text("Ок, " + " и ".join(parts) + ".")
@@ -1270,6 +1470,116 @@ async def _ingest_media(
             note=caption or "временный разбор вложения",
         )
         temp = temp_session.get_session(bot_data, chat_id)
+
+    # --- ЖКХ meter photos (T1 day / T2 night) → portal submit ---
+    from app.zhkh import photo_session as zhkh_ps
+    from app.zhkh.vision_readings import (
+        caption_suggests_meter,
+        caption_tariff_hint,
+        read_meter_from_image,
+    )
+    from app.media.images import bytes_to_jpeg_b64
+
+    zhkh_sess = zhkh_ps.get_session(bot_data, chat_id)
+    # Any photo can be a meter reading; if not — fall through to normal temp vision.
+    if kind == "photo" and not session:
+        force = caption_tariff_hint(caption)
+        hinted = (
+            zhkh_sess is not None
+            or caption_suggests_meter(caption)
+            or force is not None
+        )
+        await update.effective_message.reply_text(
+            "Смотрю, есть ли показания на фото…" if not hinted else "Смотрю показания…"
+        )
+        try:
+            _jpeg, data_url = bytes_to_jpeg_b64(raw, source_name=original)
+            reading = await read_meter_from_image(router, data_url=data_url)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("meter vision failed")
+            if hinted:
+                await update.effective_message.reply_text(
+                    f"Vision не разобрал счётчик: {exc}\n"
+                    "Нужна vision-модель в LM Studio. Или: показания т1 123 т2 456"
+                )
+                return
+            reading = None
+
+        is_meterish = bool(
+            reading
+            and (
+                reading.is_meter
+                or reading.t1 is not None
+                or reading.t2 is not None
+                or (force and (reading.t1 is not None or reading.t2 is not None))
+            )
+        )
+        if hinted and reading and not is_meterish:
+            await update.effective_message.reply_text(
+                f"Не похоже на счётчик ({reading.hint or 'пусто'}).\n"
+                "Подпиши фото «т1»/«т2» или напиши: показания т1 123 т2 456"
+            )
+            return
+
+        if is_meterish and reading:
+            if not zhkh_sess:
+                zhkh_sess = zhkh_ps.start_session(bot_data, chat_id)
+            sole = None
+            if force and reading.t1 is not None and reading.t2 is None and reading.t3 is None:
+                sole = reading.t1
+            elif force and reading.t2 is not None and reading.t1 is None:
+                sole = reading.t2
+            if force and sole is not None:
+                zhkh_ps.merge_reading(
+                    zhkh_sess,
+                    t1=sole if force == "t1" else None,
+                    t2=sole if force == "t2" else None,
+                    t3=sole if force == "t3" else None,
+                    force_slot=force,
+                )
+            else:
+                zhkh_ps.merge_reading(
+                    zhkh_sess,
+                    t1=reading.t1,
+                    t2=reading.t2,
+                    t3=reading.t3,
+                    force_slot=force,
+                )
+
+            if not zhkh_ps.ready_for_confirm(zhkh_sess):
+                miss = zhkh_ps.missing_label(zhkh_sess)
+                have = []
+                if zhkh_sess.get("t1") is not None:
+                    have.append(f"T1={zhkh_sess['t1']:g}")
+                if zhkh_sess.get("t2") is not None:
+                    have.append(f"T2={zhkh_sess['t2']:g}")
+                await update.effective_message.reply_text(
+                    ("Есть: " + ", ".join(have) + "\n" if have else "")
+                    + f"Жду ещё фото: <b>{miss}</b>\n"
+                    "Подпиши «т1» (день) или «т2» (ночь).",
+                    parse_mode=ParseMode.HTML,
+                )
+                return
+
+            payload = {
+                "t1": zhkh_sess["t1"],
+                "t2": zhkh_sess["t2"],
+                "t3": zhkh_sess.get("t3"),
+                "meter_number": (settings.mosenergosbyt_meter or "14195368").strip(),
+            }
+            zhkh_ps.clear_session(bot_data, chat_id)
+            aid = repo.create_pending_action(
+                conn, chat_id, "submit_zhkh_portal", payload
+            )
+            conn.commit()
+            card = format_action_card_html("submit_zhkh_portal", payload)
+            await update.effective_message.reply_text(
+                f"{card}\n\nПередать в личный кабинет?",
+                parse_mode=ParseMode.HTML,
+                reply_markup=confirm_keyboard(aid),
+            )
+            return
+        # not a meter photo → continue to normal temp vision below
 
     # --- temporary / ephemeral ---
     if (

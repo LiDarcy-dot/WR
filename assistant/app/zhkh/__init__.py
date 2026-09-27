@@ -10,6 +10,7 @@ from app.zhkh.mosenergosbyt import (
 )
 from app.zhkh.parse import parse_zhkh_reading
 from app.zhkh.service import format_zhkh_status_html, record_reading, mark_submitted
+from app.zhkh.portal import submit_readings, parse_credentials_message
 
 __all__ = [
     "CABINET_URL",
@@ -24,4 +25,6 @@ __all__ = [
     "format_zhkh_status_html",
     "record_reading",
     "mark_submitted",
+    "submit_readings",
+    "parse_credentials_message",
 ]

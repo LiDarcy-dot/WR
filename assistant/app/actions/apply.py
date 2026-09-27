@@ -76,6 +76,16 @@ def format_action_card(action_type: str, payload: dict[str, Any]) -> str:
             f"Период: {payload.get('period') or 'текущий месяц'}"
         )
 
+    if action_type == "submit_zhkh_portal":
+        return (
+            "Карточка: передать в ЛК Мосэнергосбыт\n"
+            f"Счётчик/ЛС: {payload.get('meter_number') or '14195368'}\n"
+            f"T1 (день): {payload.get('t1')}\n"
+            f"T2 (ночь): {payload.get('t2')}\n"
+            f"T3: {payload.get('t3') or '—'}\n"
+            "Бот войдёт в кабинет и отправит показания."
+        )
+
     return f"Действие: {action_type}\n{payload}"
 
 
@@ -176,6 +186,31 @@ def apply_action(
         return (
             f"Отметил подачу в кабинет: счётчик {result['meter_number']}, "
             f"{result['period']} = {result['value']:g}"
+        )
+
+    if action_type == "submit_zhkh_portal":
+        # Actual portal call runs in bot (needs data_dir + async). Here only local record.
+        from app.zhkh.service import record_reading
+
+        t1 = float(payload["t1"])
+        t2 = payload.get("t2")
+        note = f"T1={t1:g}"
+        if t2 is not None:
+            note += f"; T2={float(t2):g}"
+        if payload.get("t3") is not None:
+            note += f"; T3={float(payload['t3']):g}"
+        result = record_reading(
+            conn,
+            value=t1,
+            period=payload.get("period"),
+            meter_number=payload.get("meter_number"),
+            source=f"portal_pending:{note}",
+            timezone=timezone,
+        )
+        return (
+            f"Локально записал T1={t1:g}"
+            + (f" T2={float(t2):g}" if t2 is not None else "")
+            + f" за {result['period']}. Передача в ЛК — следующим шагом."
         )
 
     raise ValueError(f"Неизвестный action_type: {action_type}")

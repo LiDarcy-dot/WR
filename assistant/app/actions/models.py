@@ -61,4 +61,5 @@ ACTION_TYPES = {
     "create_entity_type",
     "record_zhkh_reading",
     "mark_zhkh_submitted",
+    "submit_zhkh_portal",
 }

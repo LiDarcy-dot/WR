@@ -386,6 +386,13 @@ def classify_intent(text: str) -> Intent:
         looks_like_zhkh_mark_sent,
         parse_zhkh_reading,
     )
+    from app.zhkh.portal import parse_credentials_message
+
+    if parse_credentials_message(t) and any(
+        x in low
+        for x in ("мосэнерго", "жкх", "логин", "лк ", "личный кабинет")
+    ):
+        return Intent("zhkh_creds", t)
 
     if looks_like_zhkh_mark_sent(t):
         return Intent("zhkh_mark_sent", t)

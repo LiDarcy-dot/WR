@@ -248,8 +248,9 @@ def menu_section_html(section: str) -> str:
         "zhkh": (
             "<b>ЖКХ · Мосэнергосбыт</b>\n"
             "Счётчик <code>14195368</code> · окно <b>15–26</b>.\n"
-            "<i>показания 12345</i> — записать\n"
-            "<i>подал показания</i> — отметить подачу в кабинет"
+            "Фото табло с подписью <i>т1</i> / <i>т2</i> → Confirm → подача в ЛК.\n"
+            "Или: <i>показания т1 123 т2 456</i>\n"
+            "Логин ЛК: <i>логин: … пароль: …</i>"
         ),
         "inbox": (
             "<b>Файлы</b>\n"
@@ -509,6 +510,15 @@ def format_action_card_html(action_type: str, payload: dict[str, Any]) -> str:
             f"<b>Отметить подачу в кабинет</b>\n"
             f"Счётчик: <code>{esc(payload.get('meter_number') or '14195368')}</code>\n"
             f"Период: {esc(payload.get('period') or 'текущий')}"
+        )
+
+    if action_type == "submit_zhkh_portal":
+        return (
+            f"<b>Передать в ЛК Мосэнергосбыт</b>\n"
+            f"Счётчик/ЛС: <code>{esc(payload.get('meter_number') or '14195368')}</code>\n"
+            f"T1 день: <b>{esc(payload.get('t1'))}</b>\n"
+            f"T2 ночь: <b>{esc(payload.get('t2'))}</b>\n"
+            f"T3: {esc(payload.get('t3') or '—')}"
         )
 
     return esc(payload)

@@ -13,3 +13,5 @@ Pillow>=10.4.0
 pillow-heif>=0.18.0
 telethon>=1.36.0
 PySocks>=1.7.1
+requests>=2.32.0
+mosenergosbyt>=0.1.16

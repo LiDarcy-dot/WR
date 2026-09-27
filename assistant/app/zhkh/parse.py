@@ -108,16 +108,52 @@ def looks_like_zhkh_mark_sent(text: str) -> bool:
     )
 
 
+def parse_t1_t2_text(text: str) -> ParsedReading | None:
+    """Parse 'показания т1 123 т2 456' without requiring other hints beyond tariffs."""
+    low = (text or "").lower().replace("ё", "е")
+    t1 = t2 = t3 = None
+    m1 = re.search(rf"(?:т\s*1|t\s*1|день)\s*[:=]?\s*{_NUM}", low)
+    m2 = re.search(rf"(?:т\s*2|t\s*2|ночь)\s*[:=]?\s*{_NUM}", low)
+    m3 = re.search(rf"(?:т\s*3|t\s*3)\s*[:=]?\s*{_NUM}", low)
+    if m1:
+        t1 = _f(m1.group(1))
+    if m2:
+        t2 = _f(m2.group(1))
+    if m3:
+        t3 = _f(m3.group(1))
+    if t1 is None and t2 is None:
+        return None
+    note = []
+    if t1 is not None:
+        note.append(f"T1={t1:g}")
+    if t2 is not None:
+        note.append(f"T2={t2:g}")
+    if t3 is not None:
+        note.append(f"T3={t3:g}")
+    return ParsedReading(
+        value=float(t1 if t1 is not None else t2),
+        note="; ".join(note),
+        t1=t1,
+        t2=t2,
+        t3=t3,
+    )
+
+
 def parse_zhkh_reading(text: str) -> ParsedReading | None:
     raw = (text or "").strip()
     if not raw:
         return None
+    dual = parse_t1_t2_text(raw)
+    if dual and dual.t1 is not None and dual.t2 is not None:
+        return dual
     low = raw.lower().replace("ё", "е")
     if not any(h in low for h in READING_HINTS) and not re.search(
         r"\bт[123]\b|\bt[123]\b", low
     ):
         # allow "показания 12345" already covered; bare large number alone — no
         return None
+    if dual:
+        return dual
 
     meter_m = re.search(
         r"(?:счетчик|счётчик|пу|№|#)\s*[:=]?\s*(\d{6,12})",
